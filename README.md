@@ -1,1 +1,1 @@
-All R scripts are .Rmd files (R Markdwon files) designed to be used in R Studio. All required files to carry out the analyses are also located in this repository (e.g., phyloseq files, environmental data, etc.).
+All R scripts are .Rmd (R Markdown files) or .R (R script files) designed to be used in R Studio. All required files to carry out the analyses are also located in this repository (e.g., phyloseq files, environmental data, etc.).
