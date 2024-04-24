@@ -1,0 +1,967 @@
+---
+title: "Erebus network analysis"
+author: "Stephen Noell"
+date: "24 August 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE, 
+                      warning = FALSE,
+                      fig.align = "center",
+                      fig.width = 10,
+                      fig.height = 6)
+```
+
+
+```{r}
+# Libraries
+
+library("tidyverse")       # data wrangling and visualisation
+library("phyloseq")        # analysis of microbial communities - upload data
+library("patchwork")       # plots together
+library("here")            # set the path to the folder
+library("reshape")
+library("RColorBrewer")    # for colour palette
+library("paletteer")       # colour palette
+library("SpiecEasi")      # for network analysis
+library("ggpubr") # for making final plots arranged
+library("svglite") #for saving SVGs
+library(NetCoMi)
+library(limma)
+library(igraph)
+
+set.seed(57)
+```
+
+```{r}
+# Input data, filter and transform.
+# This phyloseq object has the ASVs numbered and the correct metadata 
+
+erebusprof <- readRDS("phyloseq_files/physeq_all")
+
+erebusprof <- subset_taxa (erebusprof, (Kingdom !="Eukaryota")) # we remove Eukaryota and NA
+erebusprof <- subset_taxa (erebusprof, (Order !="Chloroplast") | is.na(Order)) # we remove Chloroplast but retain NA
+erebusprof <- subset_taxa (erebusprof, (Family != "Mitochondria") | is.na(Family)) 
+
+new.names <- paste0("ASV_", seq(ntaxa(erebusprof))) # define new names ASV_1, ASV_2, ...
+seqs <- taxa_names(erebusprof) # store sequences
+names(seqs) <- new.names # make map from ASV to full sequence
+taxa_names(erebusprof) <- new.names # rename 
+erebusprof
+
+#CLR transform data separately before combining data sets
+erebusprofc <- microbiome::transform(erebusprof, "clr")
+
+erebuspro.otu <- as.data.frame(otu_table(erebusprofc)) %>%
+  rownames_to_column(var = "Sample")
+
+###18S
+erebus18sf <- readRDS("phyloseq_files/physeq_18s_erebus_silva_nof_fin.cont")
+#CLR transform
+erebus18sfc <- microbiome::transform(erebus18sf, "clr")
+
+erebus18s.otu <- as.data.frame(otu_table(erebus18sfc)) %>%
+  rownames_to_column(var = "Sample")
+
+###ITS
+erebusitsf <- readRDS("phyloseq_files/physeq_its_erebus.cont")
+#CLR transform
+erebusitsfc <- microbiome::transform(erebusitsf, "clr")
+
+erebusits.otu <- as.data.frame(otu_table(erebusitsfc)) %>%
+  rownames_to_column(var = "Sample")
+
+
+######### Need to filter erebusprof to only samples in the ITS data
+erebusits.otu2 <- erebusits.otu %>%
+  mutate_at("Sample", str_replace, "-ITS", "")
+
+erebus18s.otu2 <- erebus18s.otu %>%
+  mutate_at("Sample", str_replace, "-18s", "")
+
+erebuspro.otu2 <- erebuspro.otu %>%
+  mutate_at("Sample", str_replace, "WC - ", "WC-") %>%
+  mutate_at("Sample", str_replace, "TR2 - ", "TR2-") %>%
+  mutate_at("Sample", str_replace, "Harry's Dream Vent", "Harrys-Dream-Vent") %>%
+  mutate_at("Sample", str_replace, "Harry's Dream", "Harrys-Dream") %>%
+  mutate_at("Sample", str_replace, "Crater1 0-1cm", "Crater1-0-1cm") %>%
+  mutate_at("Sample", str_replace, "Crater 2 Mat", "Crater2-Mat") %>%
+  mutate_at("Sample", str_replace, "Crater 6 low", "Crater6-low") %>%
+  mutate_at("Sample", str_replace, "TR ERB 1A - 65", "ERB-1A") %>%
+  mutate_at("Sample", str_replace, "Helo Cave", "Helocave") %>%
+  mutate_at("Sample", str_replace, "Warren Cave", "Warren-Cave-2006")
+
+erebus_all <- inner_join(erebusits.otu2, erebus18s.otu2, by = "Sample") %>%
+  inner_join(., erebuspro.otu2, by = "Sample") %>%
+  column_to_rownames(var = "Sample") %>%
+  as.matrix(.)
+
+############## Same for tax table
+erebuspro.tax <- as.data.frame(tax_table(erebusprofc))
+erebus18s.tax <- as.data.frame(tax_table(erebus18sfc)) %>%
+  select(-Strain)
+erebusits.tax <- as.data.frame(tax_table(erebusitsfc))
+
+erebusits.tax$Species <- NA
+erebus18s.tax$Clade <- NA
+erebuspro.tax$Clade <- NA
+
+erebus_all.tax <- as.matrix(rbind(erebusits.tax, erebus18s.tax, erebuspro.tax))
+
+env_data_all <- read.csv("phyloseq_files/env_data_all.csv", header = TRUE) %>%
+  column_to_rownames(var = "Sample.name")
+
+phy_erebus_all <- phyloseq(otu_table(erebus_all, taxa_are_rows = FALSE),
+                           tax_table(erebus_all.tax),   sample_data(env_data_all))
+phy_erebus_all
+
+```
+
+```{r}
+#filter data before going into network; using cutoff of 4.5 in 3 samples
+seq_flt <- genefilter_sample(phy_erebus_all, filterfun_sample(function(x) x > 4.5), A = 3)
+phy_erebus_all2 <- prune_taxa(seq_flt, phy_erebus_all)
+phy_erebus_all2
+
+otu_table <- as.data.frame(t(as.data.frame(otu_table(phy_erebus_all2)))) %>%
+  rownames_to_column(var = "OTU")
+
+tax_table <- as.data.frame(tax_table(phy_erebus_all2)) %>%
+  rownames_to_column(var = "OTU")
+
+otu_tax <- left_join(tax_table, otu_table, by = "OTU")
+
+#write.csv(otu_tax, "network_ASVS.csv")
+#leaves 228 ASVs
+
+
+```
+
+
+
+```{r}
+net_pear_tt <- netConstruct(phy_erebus_all2,
+                         measure = "pearson",
+                         sparsMethod = "t-test",
+                         adjust = "adaptBH",
+                         verbose = 3,
+                         seed = 63)
+saveRDS(net_pear_tt, "net_pear_tt")
+```
+
+```{r}
+net_pear_tt_analyz <- netAnalyze(net_pear_tt, 
+                          clustMethod = "cluster_fast_greedy")
+
+test2 <- summary(net_pear_tt_analyz)
+test2
+
+#modularity: 0.43; positive edge %: 85.6%
+# 4 clusters, 1 with just 1 ASV:
+#name: 0   1  2  3
+   #: 1 100 76 54
+
+#Hubs: 
+#ASV_120   Actinobacteriota, Acidimicrobiia
+ #ASV_141   Planctomycetota, Family Gemmataceae
+ #ASV_18S_19 Coenocystis_inconstans
+ #ASV_18S_58  Alveolata, Didinium
+ #ASV_18S_61 Metazoa
+ #ASV_18S_70 Trebouxiophyceae
+ #ASV_207   Acidobacteriota, Candidatus Solibacter
+ #ASV_226   Chloroflexi, Ktedonobacteraceae
+ #ASV_334   WPS-2
+ #ASV_47    Acidobacteriota, Candidatus Koribacter
+ #ASV_90    Acidobacteriota
+ #ASV_ITS_3 Clade 3
+
+```
+
+
+```{r}
+adj_matrix <- net_pear_tt$adjaMat1
+graph <- graph_from_adjacency_matrix(adj_matrix, mode = "undirected")
+
+#get cluster membership
+module_data <- as.data.frame(net_pear_tt_analyz$clustering$clust1) %>%
+  rownames_to_column(var = "Node") %>%
+  dplyr::rename(., "Module" = 2)
+
+
+###Transform to binary
+transform_to_binary <- function(adj_matrix) {
+  adj_matrix[adj_matrix >= 0.5] <- 1
+  adj_matrix[adj_matrix < 0.5] <- 0
+  return(adj_matrix)
+}
+
+# Step 2: Categorize nodes into modules based on the information in the data frame
+categorize_nodes <- function(module_data, nodes) {
+  module_membership <- rep(NA, length(nodes))
+  for (i in seq_along(nodes)) {
+    node <- nodes[i]
+    module <- module_data$Module[module_data$Node == node]
+    if (length(module) > 0) {
+      module_membership[i] <- module
+    }
+  }
+  return(module_membership)
+}
+
+# Step 3: Calculate the number of connections between nodes in different modules
+calculate_module_connections <- function(adj_matrix, module_membership) {
+  num_modules <- max(module_membership, na.rm = TRUE)
+  num_connections <- matrix(0, nrow = num_modules, ncol = num_modules,
+                            dimnames = list(1:num_modules, 1:num_modules))
+  for (i in 1:nrow(adj_matrix)) {
+    for (j in 1:ncol(adj_matrix)) {
+      if (adj_matrix[i, j] == 1 && !is.na(module_membership[i]) && !is.na(module_membership[j])) {
+        source_module <- module_membership[i]
+        target_module <- module_membership[j]
+        num_connections[source_module, target_module] <- num_connections[source_module, target_module] + 1
+      }
+    }
+  }
+  return(num_connections)
+}
+
+
+binary <- transform_to_binary(adj_matrix)
+nodes <- colnames(adj_matrix)
+module_membership <- categorize_nodes(module_data, nodes)
+
+connections <- calculate_module_connections(binary, module_membership) %>%
+  as.data.frame(.) %>%
+  dplyr::rename("Western Crater" = 1) %>%
+  dplyr::rename("Tramway Ridge" = 2) %>%
+  dplyr::rename("Subglacial" = 3)
+
+connections
+```
+
+```{r}
+plot(net_pear_analyz, 
+     nodeColor = "cluster", 
+     nodeSize = "eigenvector",
+     repulsion = 0.8,
+     rmSingles = TRUE,
+     labelScale = FALSE,
+     cexLabels = 0.5,
+     nodeSizeSpread = 3,
+     cexNodes = 2,
+     hubBorderCol = "darkgray",
+     showTitle = FALSE,
+     cexTitle = 2.3)
+
+legend(0.7, 1.1, cex = 0.6, title = "estimated correlation:",
+       legend = c("+","-"), lty = 1, lwd = 3, col = c("#009900","red"),
+       bty = "n", horiz = TRUE)
+
+
+```
+
+```{r}
+plot(net_pear_tt_analyz, 
+     nodeColor = "cluster", 
+     nodeSize = "eigenvector",
+     repulsion = 0.8,
+     rmSingles = TRUE,
+     labelScale = FALSE,
+     cexLabels = 0.5,
+     nodeSizeSpread = 3,
+     cexNodes = 2,
+     hubBorderCol = "darkgray",
+     showTitle = FALSE)
+
+legend(0.7, 0.95, cex = 0.9, title = "estimated correlation:",
+       legend = c("+","-"), lty = 1, lwd = 3, col = c("#009900","red"),
+       bty = "n", horiz = TRUE)
+
+legend(-1.1, 1, cex = 0.9, title = "Cluster:",
+       legend = c("Cluster 1", "Cluster 2","Cluster 3"), 
+       pch = 21, pt.cex = 2, 
+       pt.bg = c("red", "#009900", "blue"),
+       col = "darkgray",
+       bty = "n", horiz = FALSE)
+
+```
+
+
+```{r}
+#Look into membership of clusters, what's where?
+
+#get cluster membership
+clust_id <- as.data.frame(net_pear_tt_analyz$clustering$clust1) %>%
+  rownames_to_column(var = "OTU") %>%
+  dplyr::rename(., "cluster" = 2)
+
+#get separate data frames for each of the 3 groups (proks, euks, fungi), each with separate columns with taxonomic info, abundance info, and cluster membership
+
+otu_all <- as.data.frame(t(as.data.frame(otu_table(phy_erebus_all2)))) %>%
+  rownames_to_column(var = "OTU")
+tax_all <- as.data.frame(tax_table(phy_erebus_all2)) %>%
+  rownames_to_column(var = "OTU")
+tax_all[is.na(tax_all)] = "Unassigned"
+
+#combine tax and cluster
+tax_clust <- full_join(clust_id, tax_all, by = "OTU")
+
+#split by 3 tax groups
+otc_prok <- tax_clust %>%
+  dplyr::filter(Kingdom == "Archaea" | Kingdom == "Bacteria")
+
+otc_its <- tax_clust %>%
+  dplyr::filter(Kingdom == "Fungi")
+
+otc_euk <- tax_clust %>%
+  dplyr::filter(Kingdom == "Eukaryota")
+
+# need to move back into reads space, not CLR
+
+#################### Prokaryotes
+pro_to_keep <- otc_prok$OTU
+erebuspro_filt <- prune_taxa(pro_to_keep, erebusprof)
+samples_to_keep_pro <- c("Crater1 0-1cm", "Crater 2 Mat", "TR ERB 1A - 65", "Harry's Dream",
+                         "Harry's Dream Vent", "Helo Cave", "TR2 - 24", "TR2 - 34", "TR2 - 44", 
+                         "Warren Cave", "WC - 20", "WC - 35", "WC - 40", "WC - 50")
+
+erebuspro_filt2 <- erebuspro_filt %>%
+  subset_samples(Name %in% samples_to_keep_pro)
+
+erebuspro_otu3 <- as.data.frame(t(as.data.frame(otu_table(erebuspro_filt2))))
+
+erebuspro_otu3.5 <- erebuspro_otu3 %>%
+  rownames_to_column(var = "OTU") %>%
+  melt(.) %>%
+  dplyr::rename("Sample" = "variable") %>%
+  mutate_at("Sample", str_replace, "WC - ", "WC-") %>%
+  mutate_at("Sample", str_replace, "TR2 - ", "TR2-") %>%
+  mutate_at("Sample", str_replace, "Harry's Dream Vent", "Harrys-Dream-Vent") %>%
+  mutate_at("Sample", str_replace, "Harry's Dream", "Harrys-Dream") %>%
+  mutate_at("Sample", str_replace, "Crater1 0-1cm", "Crater1-0-1cm") %>%
+  mutate_at("Sample", str_replace, "Crater 2 Mat", "Crater2-Mat") %>%
+  mutate_at("Sample", str_replace, "Crater 6 low", "Crater6-low") %>%
+  mutate_at("Sample", str_replace, "TR ERB 1A - 65", "ERB-1A") %>%
+  mutate_at("Sample", str_replace, "Helo Cave", "Helocave") %>%
+  mutate_at("Sample", str_replace, "Warren Cave", "Warren-Cave-2006")
+
+erebuspro_otu4 <- otc_prok %>%
+  dplyr::select(OTU, cluster) %>%
+  full_join(erebuspro_otu3.5, .)
+
+pro_sum <- erebuspro_otu4 %>%
+  dplyr::group_by(Sample) %>%
+  dplyr::summarise(sum = sum(value))
+
+pro_merg <- left_join(erebuspro_otu4, pro_sum, by = "Sample")
+
+pro_prop <- pro_merg %>%
+  dplyr::group_by(Sample, cluster) %>%
+  dplyr::reframe(prop = sum(value) / sum) %>%
+  as.data.frame(.) %>%
+  dplyr::distinct(.)
+
+pro_prop2 <- pro_prop %>%
+  mutate(Exposure = case_when(
+    startsWith(Sample, "WC") ~ "Exposed",
+    startsWith(Sample, "TR") ~ "Exposed",
+    startsWith(Sample, "Crater") ~ "Exposed",
+    startsWith(Sample, "ERB") ~ "Exposed",
+    startsWith(Sample, "Harrys") ~ "Subglacial",
+    startsWith(Sample, "Helocave") ~ "Subglacial",
+    startsWith(Sample, "Warren") ~ "Subglacial"
+  ))
+
+pro_heatmap <- ggplot(pro_prop2, aes(Sample, cluster)) +
+  geom_tile(aes(fill = prop)) +
+  theme_bw() +
+  scale_fill_distiller('Relative \nContribution', palette = "Reds", direction = 1) +
+  ylab("Cluster") +
+  xlab("Sample") +
+  theme(strip.background = element_rect(fill = "white",
+                                    color = "black"),
+    strip.text.x = element_text(size = 9),
+    legend.title = element_text(size=10),
+    legend.text = element_text(size=9),
+    axis.text.x  = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    legend.position = "right") +
+  facet_grid(.~Exposure, scales = "free", space = "free") +
+      scale_x_discrete(guide = guide_axis(angle = 90))
+
+pro_heatmap
+
+
+pro_prop3 <- pro_prop2 %>%
+  dplyr::mutate(Subcategory = ifelse(substr(Sample, 1, 2) == "WC", "Western Crater", 
+                              as.character(Exposure))) %>%
+  dplyr::group_by(cluster, Subcategory) %>%
+  dplyr::summarise(avg_prop = mean(prop, na.rm = TRUE)) %>%
+  as.data.frame(.)
+
+pro_prop3
+
+################### 18S
+
+euk_to_keep <- otc_euk$OTU
+erebuseuk_filt <- prune_taxa(euk_to_keep, erebus18sf)
+samples_to_keep <- sample_names(phy_erebus_all2)
+
+for (i in seq_along(samples_to_keep)) {
+  samples_to_keep[[i]] <- paste(samples_to_keep[[i]], "-18s", sep = "")
+}
+
+erebuseuk_filt2 <- subset_samples(erebuseuk_filt, 
+                                  sample_names(erebuseuk_filt) %in% samples_to_keep)
+
+erebuseuk_otu3 <- as.data.frame(t(as.data.frame(otu_table(erebuseuk_filt2)))) 
+
+erebuseuk_otu3.5 <- erebuseuk_otu3 %>%
+  rownames_to_column(var = "OTU") %>%
+  melt(.) %>%
+  dplyr::rename("Sample" = "variable")
+
+erebuseuk_otu4 <- otc_euk %>%
+  dplyr::select(OTU, cluster) %>%
+  full_join(erebuseuk_otu3.5, .)
+
+euk_sum <- erebuseuk_otu4 %>%
+  dplyr::group_by(Sample) %>%
+  dplyr::summarise(sum = sum(value))
+
+euk_merg <- left_join(erebuseuk_otu4, euk_sum, by = "Sample")
+
+euk_prop <- euk_merg %>%
+  dplyr::group_by(Sample, cluster) %>%
+  dplyr::reframe(prop = sum(value) / sum) %>%
+  as.data.frame(.) %>%
+  dplyr::distinct(.)
+
+euk_prop$Sample <- as.character(euk_prop$Sample)
+
+euk_prop2 <- euk_prop %>%
+  dplyr::mutate(Exposure = dplyr::case_when(
+    startsWith(Sample, "WC") ~ "Exposed",
+    startsWith(Sample, "TR") ~ "Exposed",
+    startsWith(Sample, "Crater") ~ "Exposed",
+    startsWith(Sample, "ERB") ~ "Exposed",
+    startsWith(Sample, "Harrys") ~ "Subglacial",
+    startsWith(Sample, "Helocave") ~ "Subglacial",
+    startsWith(Sample, "Warren") ~ "Subglacial"
+  ))
+
+euk_prop2$Sample <- gsub("-18s", "", euk_prop2$Sample)
+
+euk_heatmap <- ggplot(euk_prop2, aes(Sample, cluster)) +
+  geom_tile(aes(fill = prop)) +
+  theme_bw() +
+  scale_fill_distiller('Relative \nContribution', palette = "Reds", direction = 1) +
+  ylab("Cluster") +
+  xlab("Sample") +
+  theme(strip.background = element_rect(fill = "white",
+                                    color = "black"),
+    strip.text.x = element_text(size = 9),
+    legend.title = element_text(size=10),
+    legend.text = element_text(size=9),
+    axis.text.x  = element_text(size=9),
+    axis.title.x = element_text(size=10),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    legend.position = "none") +
+  facet_grid(.~Exposure, scales = "free", space = "free") +
+      scale_x_discrete(guide = guide_axis(angle = 90))
+
+euk_heatmap
+
+################ITS
+its_to_keep <- otc_its$OTU
+erebusits_filt <- prune_taxa(its_to_keep, erebusitsf)
+samples_to_keep <- sample_names(phy_erebus_all2)
+
+for (i in seq_along(samples_to_keep)) {
+  samples_to_keep[[i]] <- paste(samples_to_keep[[i]], "-ITS", sep = "")
+}
+
+erebusits_filt2 <- subset_samples(erebusits_filt, 
+                                  sample_names(erebusits_filt) %in% samples_to_keep)
+
+erebusits_otu3 <- as.data.frame(t(as.data.frame(otu_table(erebusits_filt2)))) 
+erebusits_otu3.5 <- erebusits_otu3 %>%
+  rownames_to_column(var = "OTU") %>%
+  melt(.) %>%
+  dplyr::rename("Sample" = "variable")
+
+erebusits_otu4 <- otc_its %>%
+  dplyr::select(OTU, cluster) %>%
+  full_join(erebusits_otu3.5, .)
+
+its_sum <- erebusits_otu4 %>%
+  dplyr::group_by(Sample) %>%
+  dplyr::summarise(sum = sum(value))
+
+its_merg <- left_join(erebusits_otu4, its_sum, by = "Sample")
+
+its_prop <- its_merg %>%
+  dplyr::group_by(Sample, cluster) %>%
+  dplyr::reframe(prop = sum(value) / sum) %>%
+  as.data.frame(.) %>%
+  dplyr::distinct(.)
+
+its_prop$Sample <- as.character(its_prop$Sample)
+
+its_prop2 <- its_prop %>%
+  dplyr::mutate(Exposure = dplyr::case_when(
+    startsWith(Sample, "WC") ~ "Exposed",
+    startsWith(Sample, "TR") ~ "Exposed",
+    startsWith(Sample, "Crater") ~ "Exposed",
+    startsWith(Sample, "ERB") ~ "Exposed",
+    startsWith(Sample, "Harrys") ~ "Subglacial",
+    startsWith(Sample, "Helocave") ~ "Subglacial",
+    startsWith(Sample, "Warren") ~ "Subglacial"
+  ))
+
+its_heatmap <- ggplot(its_prop2, aes(Sample, cluster)) +
+  geom_tile(aes(fill = prop)) +
+  theme_bw() +
+  scale_fill_distiller('Relative \nContribution', palette = "Reds", direction = 1) +
+  ylab("Cluster") +
+  xlab("Sample") +
+  theme(strip.background = element_rect(fill = "white",
+                                    color = "black"),
+    strip.text.x = element_text(size = 9),
+    legend.title = element_text(size=10),
+    legend.text = element_text(size=9),
+    axis.text.x  = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    legend.position = "none") +
+  facet_grid(.~Exposure, scales = "free", space = "free") +
+      scale_x_discrete(guide = guide_axis(angle = 90))
+
+its_heatmap
+
+################### combine
+heat_all <- ggarrange(pro_heatmap,
+                       its_heatmap, euk_heatmap,
+                      nrow = 3,
+                      ncol = 1,
+                      labels = c("B", "D", "F"),
+                      common.legend = TRUE,
+                      legend = "top",
+                      heights = c(0.6, 0.6, 1))
+heat_all
+```
+
+```{r}
+#What proportion of each site subcategory corresponds to each module?
+
+###proks
+pro_merg$Sample <- as.character(pro_merg$Sample)
+
+pro_merg2 <- pro_merg %>%
+  dplyr::mutate(Subcategory = dplyr::case_when(
+    startsWith(Sample, "WC") ~ "Exp. Hot Soil",
+    startsWith(Sample, "TR") ~ "Tramway Ridge",
+    startsWith(Sample, "Crater") ~ "Exp. Hot Soil",
+    startsWith(Sample, "ERB") ~ "Tramway Ridge",
+    startsWith(Sample, "Harrys") ~ "Subglacial",
+    startsWith(Sample, "Helocave") ~ "Subglacial",
+    startsWith(Sample, "Warren") ~ "Subglacial"
+  ))
+
+pro_prop3 <- pro_merg2 %>%
+  dplyr::group_by(Subcategory) %>%
+  dplyr::summarise(sum2 = sum(value))
+
+pro_prop4 <- left_join(pro_merg2, pro_prop3, by = "Subcategory") %>%
+  dplyr::select(-sum)
+
+pro_prop5 <- pro_prop4 %>%
+  dplyr::group_by(Subcategory, cluster) %>%
+  dplyr::reframe(prop = sum(value) / sum2) %>%
+  as.data.frame(.) %>%
+  dplyr::distinct(.)
+
+pro_prop5$Domain <- "Prokaryotic"
+
+pro_prop5
+
+###euks
+euk_merg$Sample <- as.character(euk_merg$Sample)
+
+euk_merg2 <- euk_merg %>%
+  dplyr::mutate(Subcategory = dplyr::case_when(
+    startsWith(Sample, "WC") ~ "Exp. Hot Soil",
+    startsWith(Sample, "TR") ~ "Tramway Ridge",
+    startsWith(Sample, "Crater") ~ "Exp. Hot Soil",
+    startsWith(Sample, "ERB") ~ "Tramway Ridge",
+    startsWith(Sample, "Harrys") ~ "Subglacial",
+    startsWith(Sample, "Helocave") ~ "Subglacial",
+    startsWith(Sample, "Warren") ~ "Subglacial"
+  ))
+
+euk_prop3 <- euk_merg2 %>%
+  dplyr::group_by(Subcategory) %>%
+  dplyr::summarise(sum2 = sum(value))
+
+euk_prop4 <- left_join(euk_merg2, euk_prop3, by = "Subcategory") %>%
+  dplyr::select(-sum)
+
+euk_prop5 <- euk_prop4 %>%
+  dplyr::group_by(Subcategory, cluster) %>%
+  dplyr::reframe(prop = sum(value) / sum2) %>%
+  as.data.frame(.) %>%
+  dplyr::distinct(.)
+
+euk_prop5$Domain <- "Non-fungal eukaryotes"
+
+euk_prop5
+
+###its
+its_merg$Sample <- as.character(its_merg$Sample)
+
+its_merg2 <- its_merg %>%
+  dplyr::mutate(Subcategory = dplyr::case_when(
+    startsWith(Sample, "WC") ~ "Exp. Hot Soil",
+    startsWith(Sample, "TR") ~ "Tramway Ridge",
+    startsWith(Sample, "Crater") ~ "Exp. Hot Soil",
+    startsWith(Sample, "ERB") ~ "Tramway Ridge",
+    startsWith(Sample, "Harrys") ~ "Subglacial",
+    startsWith(Sample, "Helocave") ~ "Subglacial",
+    startsWith(Sample, "Warren") ~ "Subglacial"
+  ))
+
+its_prop3 <- its_merg2 %>%
+  dplyr::group_by(Subcategory) %>%
+  dplyr::summarise(sum2 = sum(value))
+
+its_prop4 <- left_join(its_merg2, its_prop3, by = "Subcategory") %>%
+  dplyr::select(-sum)
+
+its_prop5 <- its_prop4 %>%
+  dplyr::group_by(Subcategory, cluster) %>%
+  dplyr::reframe(prop = sum(value) / sum2) %>%
+  as.data.frame(.) %>%
+  dplyr::distinct(.)
+
+
+its_prop5$Domain <- "Fungal"
+its_prop5
+
+#########Plot
+prop5_all <- rbind(pro_prop5, euk_prop5, its_prop5)
+prop5_all$cluster <- as.factor(prop5_all$cluster)
+
+prop5_graph <- ggplot(prop5_all, aes(x = Subcategory, y = prop, fill = cluster)) +
+  geom_bar(stat = "identity") +
+  facet_grid(~ Domain, scales = "free", space = "free") +
+  scale_fill_manual(values = c("black", "#EE6677", "#228833", "#AA3377")) +
+  labs(x = "Subcategory", y = "Proportion") +
+  theme(panel.margin=unit(.05, "lines"),
+        panel.border = element_rect(color = "black", fill = NA, size = 1.2), 
+        strip.background = element_rect(color = "black", size = 1,
+                                        fill = "white"),
+    strip.text.x = element_text(size = 9),
+    legend.title = element_blank(),
+    legend.text = element_text(size=9),
+    axis.text.x  = element_text(size=9),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    legend.position = "bottom",
+        legend.key.width = unit(0.3, "cm"),
+    legend.key.height=unit(0.3,"cm")) +
+  guides(fill=guide_legend(nrow=2)) +
+  coord_cartesian(expand = FALSE) +
+    scale_x_discrete(guide = guide_axis(angle = 90))
+
+prop5_graph
+#ggsave("pro_euk_net_clust_abund.svg", prop5_graph, width = 240, height = 75, units = "mm", dpi = 300)
+```
+
+```{r}
+#plot colors
+pal_barn <- RColorBrewer::brewer.pal(8, "RdYlBu")
+pal_barn2 <- RColorBrewer::brewer.pal(9, "BrBG")
+
+pal_netphy <- RColorBrewer::brewer.pal(5, "PiYG")
+
+pal_barn3 <- RColorBrewer::brewer.pal(10, "Paired")
+its_barpf <- c(pal_barn3[5:7], "#636363")
+
+pal_netphy2 <- RColorBrewer::brewer.pal(4, "PuOr")
+
+pro_barcf <- c("black",pal_barn, pal_barn2, "#636363")
+euk_barcf <- c("black",pal_netphy, "#636363")
+its_barcf <- c("black",pal_netphy2, "#636363")
+
+```
+
+
+```{r}
+# try to get taxonomy of each cluster
+
+############ Proks
+pro_sums1 <- erebuspro_otu3
+pro_sums2 <- rowSums(pro_sums1)
+pro_sums1$Sums <- pro_sums2
+pro_sums3 <- pro_sums1 %>%
+  rownames_to_column(var = "OTU") %>%
+  select("OTU", "Sums")
+
+pro_tax2 <- otc_prok %>%
+  dplyr::select("OTU", "cluster", 16:23) %>%
+  full_join(., pro_sums3, by = "OTU") %>%
+  dplyr::group_by(cluster, Class) %>%
+  dplyr::summarise(sum_sums = sum(Sums)) %>%
+  dplyr::mutate(Freq = sum_sums / sum(sum_sums)) %>%
+  dplyr::ungroup(.) %>%
+  as.data.frame(.)
+
+pro_tax2$Class <- as.character(pro_tax2$Class)
+pro_tax2$cluster <- as.factor(pro_tax2$cluster)
+
+pro_tax2["Class"][which(pro_tax2$Freq < 0.02), ] <- "Class < 2 %"
+
+list <- pro_tax2$Class %>%
+  unique(.) %>%
+  as.data.frame(.) %>%
+  filter(., . != "Unassigned") %>%
+  filter(., . != "Class < 2 %") %>%
+  unlist(., use.names=FALSE) %>%
+  sort(.)
+
+x <- c("Class < 2 %", list, "Unassigned")
+
+pro_tax2$Class <- factor(as.character(pro_tax2$Class), levels=x)
+pro_tax2 <- pro_tax2[order(pro_tax2$Class),]
+
+pro_clust_class <- ggplot(pro_tax2, aes(x = cluster, y = Freq, fill = Class)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = pro_barcf) +
+  theme_bw() +
+  ylab("Prop in Clust") +
+  xlab("Cluster") +
+  theme(
+    legend.title = element_blank(),
+    legend.text = element_text(size=9),
+    axis.text.x  = element_text(size=9),
+    axis.title.x = element_text(size=10),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    legend.position = "bottom",
+        legend.key.width = unit(0.3, "cm"),
+    legend.key.height=unit(0.3,"cm")) +
+  guides(fill=guide_legend(nrow=7)) +
+  coord_cartesian(expand = FALSE)
+
+pro_clust_class
+
+############## euks
+euk_sums1 <- erebuseuk_otu3
+euk_sums2 <- rowSums(euk_sums1)
+euk_sums1$Sums <- euk_sums2
+euk_sums3 <- euk_sums1 %>%
+  rownames_to_column(var = "OTU") %>%
+  select("OTU", "Sums")
+
+euk_tax2 <- otc_euk %>%
+  dplyr::select("OTU", "cluster", 16:23) %>%
+  full_join(., euk_sums3, by = "OTU") %>%
+  dplyr::group_by(cluster, Class) %>%
+  dplyr::summarise(sum_sums = sum(Sums)) %>%
+  dplyr::mutate(Freq = sum_sums / sum(sum_sums)) %>%
+  dplyr::ungroup(.) %>%
+  as.data.frame(.)
+
+euk_tax2$Class <- as.character(euk_tax2$Class)
+euk_tax2$cluster <- as.factor(euk_tax2$cluster)
+
+euk_tax2["Class"][which(euk_tax2$Freq < 0.02), ] <- "Class < 2 %"
+
+list <- euk_tax2$Class %>%
+  unique(.) %>%
+  as.data.frame(.) %>%
+  filter(., . != "Unassigned") %>%
+  filter(., . != "Class < 2 %") %>%
+  unlist(., use.names=FALSE) %>%
+  sort(.)
+
+x <- c("Class < 2 %", list, "Unassigned")
+
+euk_tax2$Class <- factor(as.character(euk_tax2$Class), levels=x)
+euk_tax2 <- euk_tax2[order(euk_tax2$Class),]
+
+euk_clust_class <- ggplot(euk_tax2, aes(x = cluster, y = Freq, fill = Class)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = euk_barcf) +
+  theme_bw() +
+  ylab("Prop in Clust") +
+  xlab("Cluster") +
+  theme(
+    legend.title = element_blank(),
+    legend.text = element_text(size=9),
+    axis.text.x  = element_text(size=9),
+    axis.title.x = element_text(size=10),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    legend.position = "bottom",
+        legend.key.width = unit(0.3, "cm"),
+    legend.key.height=unit(0.3,"cm")) +
+  guides(fill=guide_legend(nrow=2)) +
+  coord_cartesian(expand = FALSE)
+
+euk_clust_class
+
+################ fungi
+its_sums1 <- erebusits_otu3
+its_sums2 <- rowSums(its_sums1)
+its_sums1$Sums <- its_sums2
+its_sums3 <- its_sums1 %>%
+  rownames_to_column(var = "OTU") %>%
+  select("OTU", "Sums")
+
+its_tax2 <- otc_its %>%
+  #dplyr::select("OTU", "cluster", 16:23) %>%
+  full_join(., its_sums3, by = "OTU") %>%
+  dplyr::group_by(cluster, Phylum) %>%
+  dplyr::summarise(sum_sums = sum(Sums)) %>%
+  dplyr::mutate(Freq = sum_sums / sum(sum_sums)) %>%
+  dplyr::ungroup(.) %>%
+  as.data.frame(.)
+
+its_tax2$Phylum <- as.character(its_tax2$Phylum)
+its_tax2$cluster <- as.factor(its_tax2$cluster)
+
+its_tax2["Phylum"][which(its_tax2$Freq < 0.02), ] <- "Phylum < 2 %"
+
+list <- its_tax2$Phylum %>%
+  unique(.) %>%
+  as.data.frame(.) %>%
+  filter(., . != "Unassigned") %>%
+  filter(., . != "Phylum < 2 %") %>%
+  unlist(., use.names=FALSE) %>%
+  sort(.)
+
+x <- c("Phylum < 2 %", list, "Unassigned")
+
+its_tax2$Phylum <- factor(as.character(its_tax2$Phylum), levels=x)
+its_tax2 <- its_tax2[order(its_tax2$Phylum),]
+
+its_clust_phylum <- ggplot(its_tax2, aes(x = cluster, y = Freq, fill = Phylum)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = its_barpf) +
+  theme_bw() +
+  ylab("Prop in Clust") +
+  xlab("Cluster") +
+  theme(
+    legend.title = element_blank(),
+    legend.text = element_text(size=9),
+    axis.text.x  = element_text(size=9),
+    axis.title.x = element_text(size=10),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    legend.position = "bottom",
+        legend.key.width = unit(0.3, "cm"),
+    legend.key.height=unit(0.3,"cm")) +
+  guides(fill=guide_legend(nrow=2)) +
+  coord_cartesian(expand = FALSE)
+
+its_clust_phylum
+
+### fungi class
+its_sums1 <- erebusits_otu3
+its_sums2 <- rowSums(its_sums1)
+its_sums1$Sums <- its_sums2
+its_sums3 <- its_sums1 %>%
+  rownames_to_column(var = "OTU") %>%
+  select("OTU", "Sums")
+
+its_tax2 <- otc_its %>%
+  #dplyr::select("OTU", "cluster", 16:23) %>%
+  full_join(., its_sums3, by = "OTU") %>%
+  dplyr::group_by(cluster, Class) %>%
+  dplyr::summarise(sum_sums = sum(Sums)) %>%
+  dplyr::mutate(Freq = sum_sums / sum(sum_sums)) %>%
+  dplyr::ungroup(.) %>%
+  as.data.frame(.)
+
+its_tax2$Class <- as.character(its_tax2$Class)
+its_tax2$cluster <- as.factor(its_tax2$cluster)
+
+its_tax2["Class"][which(its_tax2$Freq < 0.02), ] <- "Class < 2 %"
+
+list <- its_tax2$Class %>%
+  unique(.) %>%
+  as.data.frame(.) %>%
+  filter(., . != "Unassigned") %>%
+  filter(., . != "Class < 2 %") %>%
+  unlist(., use.names=FALSE) %>%
+  sort(.)
+
+x <- c("Class < 2 %", list, "Unassigned")
+
+its_tax2$Class <- factor(as.character(its_tax2$Class), levels=x)
+its_tax2 <- its_tax2[order(its_tax2$Class),]
+
+its_clust_class <- ggplot(its_tax2, aes(x = cluster, y = Freq, fill = Class)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = its_barcf) +
+  theme_bw() +
+  ylab("Prop in Clust") +
+  xlab("Cluster") +
+  theme(
+    legend.title = element_blank(),
+    legend.text = element_text(size=9),
+    axis.text.x  = element_text(size=9),
+    axis.title.x = element_text(size=10),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_blank(),
+    legend.position = "bottom",
+        legend.key.width = unit(0.3, "cm"),
+    legend.key.height=unit(0.3,"cm")) +
+  guides(fill=guide_legend(nrow=3)) +
+  coord_cartesian(expand = FALSE)
+
+its_clust_class
+
+its_clust <- ggarrange(its_clust_phylum,
+                       its_clust_class,
+                       ncol = 2,
+                       labels = c(""))
+
+its_clust
+
+bars_all <- ggarrange(pro_clust_class,
+                      its_clust,
+                      euk_clust_class,
+                      nrow = 3,
+                      ncol = 1,
+                      labels = c("C", "E",
+                                 "G"),
+                      heights = c(1, 0.8, 0.8))
+bars_all
+```
+
+```{r}
+#final plot
+net_f1 <- ggarrange(heat_all,
+                    bars_all,
+                    ncol = 2,
+                    nrow = 1,
+                    labels = c(""),
+                    widths = c(0.6, 1))
+
+#ggsave("pro_euk_network2.svg", net_f1, width = 240, height = 200, units = "mm", dpi = 300)
+
+#ggsave("pro_euk_network2.png", net_f1, width = 240, height = 200, 
+  #     units = "mm", dpi = 300)
+
+```
+
+

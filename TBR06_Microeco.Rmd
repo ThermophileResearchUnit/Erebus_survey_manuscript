@@ -1,0 +1,155 @@
+---
+title: "Stephen Code"
+author: "Trine"
+date: "2023-01-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r Libraries and seed}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation
+library("phyloseq")        # analysis of microbial communities
+library("vegan")           # ecological multivariate analyses
+library("microbiome") #for analyzing phyloseq objects
+library("viridis") #color package
+library("svglite") #for saving SVGs
+library("ggpubr") #for saving plots
+library("here")            # set the path to the folder
+library("ggplot2")
+library("microeco")
+library("file2meco")
+library("agricolae")
+
+set.seed(57)
+```
+
+
+```{r read_phyloseq}
+# WHEN YOU OPEN THIS FILE ----
+phy_all <- readRDS("phyloseq_files/physeq_all")
+
+#otu_table(phy_all) # it still has the seqs instead of ASV_1, ASV_2, etc...
+
+new.names <- paste0("ASV_", seq(ntaxa(phy_all))) # define new names ASV_1, ASV_2, ...
+seqs <- taxa_names(phy_all) # store sequences
+names(seqs) <- new.names # make map from ASV to full sequence
+taxa_names(phy_all) <- new.names # rename 
+phy_all
+
+initial_ntaxa <- ntaxa(phy_all)
+
+#Clean 
+phy_all <- subset_taxa (phy_all, (Kingdom !="Eukaryota"))
+phy_all <- subset_taxa (phy_all, (Order !="Chloroplast") | is.na(Order))    
+phy_all <- subset_taxa (phy_all, (Family != "Mitochondria") | is.na(Family))
+cat("\n")
+cat("\nInitial number of taxa: ", initial_ntaxa)
+cat("\nNumber of taxa excluding eukaryotes, chloroplast and mitochondrial seqs: ", ntaxa(phy_all))
+cat("\nDifference: ", initial_ntaxa - ntaxa(phy_all))
+```
+
+
+```{r}
+#Load version of physeq object, with contaminants removed but not normalized
+volcsf <- phy_all
+```
+
+
+```{r}
+#get all of the data ready to go into the microeco world
+envdata <-  read.csv("phyloseq_files/DataEnv6.csv", header = TRUE) %>%
+  column_to_rownames(., var = "Name")
+
+envdata <- data.frame(sample_data(volcsf))
+
+#want to include ASV as a taxonomic rank
+tax_table <- data.frame(tax_table(volcsf)) %>%
+  rownames_to_column(., var = "ASV_original") %>%
+  dplyr::mutate(., ASV = ASV_original) %>%
+  column_to_rownames(., var = "ASV_original")
+
+#transform phyloseq to microeco object
+volcsf_meco <- phyloseq2meco(volcsf)
+# 414 taxa are removed from the otu_table, as the abundance is 0 ...
+
+volcsf_meco$sample_table <- envdata #if you need to modify the envdata as I did
+
+volcsf_meco$tax_table <- tax_table
+
+```
+
+```{r, fig.height=6, fig.width=9}
+t1 <- trans_diff$new(dataset = volcsf_meco, method = "rf", group = "Sample_type4", taxa_level = "Phylum",
+                     p_adjust_method = "BH") 
+#Set taxa level to whatever you want; in my data set, none of the ASVs were significant at the ASV level. 
+
+# plot the MeanDecreaseGini bar
+# group_order is designed to sort the groups
+g1 <- t1$plot_diff_bar(group_order = c("Tramway Ridge","Subglacial","Exp Hot Soil"))
+# plot the abundance using same taxa in g1
+g2 <- t1$plot_diff_abund(group_order = c("Tramway Ridge","Subglacial","Exp Hot Soil"), 
+                         select_taxa = t1$plot_diff_bar_taxa)
+# now the y axis in g1 and g2 is same, so we can merge them
+# remove g1 legend; remove g2 y axis text and ticks
+g1 <- g1 + theme(legend.position = "none")
+g2 <- g2 + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank())
+gridExtra::grid.arrange(g1, g2, ncol = 2, nrow = 1, widths = c(2, 1.7))
+
+
+subcat_pal <- c("#7fc97f","#386cb0", "darkorange2","#984ea3")
+
+microeco_subcategory <- t1$plot_diff_abund(add_sig = T, coord_flip = F) + scale_fill_manual(values=subcat_pal) + scale_color_manual(values=subcat_pal)
+microeco_subcategory
+
+
+ggsave(
+  "TBR06_microeco_subcategory.pdf",
+  plot = microeco_subcategory,
+  path = "Saved_plots/",
+  device = "pdf",
+  width = 9,
+  height = 6,
+  units = "in"
+)
+```
+
+
+```{r, fig.height=6, fig.width=9}
+t1 <- trans_diff$new(dataset = volcsf_meco, method = "rf", group = "Sample_type3", taxa_level = "Phylum",
+                     p_adjust_method = "BH")
+
+# plot the MeanDecreaseGini bar
+# group_order is designed to sort the groups
+g1 <- t1$plot_diff_bar(group_order = c("Subglacial","Exposed"))
+# plot the abundance using same taxa in g1
+g2 <- t1$plot_diff_abund(group_order = c("Subglacial","Exposed"), 
+                         select_taxa = t1$plot_diff_bar_taxa)
+# now the y axis in g1 and g2 is same, so we can merge them
+# remove g1 legend; remove g2 y axis text and ticks
+g1 <- g1 + theme(legend.position = "none")
+g2 <- g2 + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank())
+gridExtra::grid.arrange(g1, g2, ncol = 2, nrow = 1, widths = c(2, 1.7))
+
+
+subcat_pal <- c("#67a9cf","#F9A620" )
+
+microeco_category <- t1$plot_diff_abund(add_sig = T, coord_flip = F) + scale_fill_manual(values=subcat_pal) + scale_color_manual(values=subcat_pal)
+microeco_category
+
+ggsave(
+  "TBR06_microeco_category.pdf",
+  plot = microeco_category,
+  path = "Saved_plots/",
+  device = "pdf",
+  width = 9,
+  height = 6,
+  units = "in"
+)
+
+```

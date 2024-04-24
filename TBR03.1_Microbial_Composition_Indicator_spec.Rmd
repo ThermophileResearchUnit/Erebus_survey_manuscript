@@ -1,0 +1,490 @@
+---
+title: "03_Microbial_Composition"
+author: "Trine"
+date: "2023-01-11"
+output: html_document
+---
+
+
+## Analysis of microbial community
+```{r}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation
+library("phyloseq")        # analysis of microbial communities
+library("patchwork")       # plots together
+library("here")            # set the path to the folder
+library("ggplot2")
+library("ggpubr") #for putting figs together
+library("RColorBrewer") #for color palettes
+library("svglite") #for saving SVGs
+library(here)
+library(indicspecies)
+
+set.seed(57)
+```
+
+
+```{r read_phyloseq}
+# WHEN YOU OPEN THIS FILE ----
+phy_all <- readRDS("phyloseq_files/physeq_all")
+
+#otu_table(phy_all) # it still has the seqs instead of ASV_1, ASV_2, etc...
+
+new.names <- paste0("ASV_", seq(ntaxa(phy_all))) # define new names ASV_1, ASV_2, ...
+seqs <- taxa_names(phy_all) # store sequences
+names(seqs) <- new.names # make map from ASV to full sequence
+taxa_names(phy_all) <- new.names # rename 
+phy_all
+
+initial_ntaxa <- ntaxa(phy_all)
+
+#Clean 
+phy_all <- subset_taxa (phy_all, (Kingdom !="Eukaryota"))
+phy_all <- subset_taxa (phy_all, (Order !="Chloroplast") | is.na(Order))    
+phy_all <- subset_taxa (phy_all, (Family != "Mitochondria") | is.na(Family))
+cat("\n")
+cat("\nInitial number of taxa: ", initial_ntaxa)
+cat("\nNumber of taxa excluding eukaryotes, chloroplast and mitochondrial seqs: ", ntaxa(phy_all))
+cat("\nDifference: ", initial_ntaxa - ntaxa(phy_all))
+```
+
+```{r}
+#normalize read counts
+phy_all_trans <- transform_sample_counts(phy_all, function(x) x / sum(x))
+
+```
+
+
+
+
+```{r}
+#Indicator species analysis, ASV level
+otu_table1 <- as.data.frame(otu_table(phy_all_trans))
+tax_table1 <- as.data.frame(tax_table(phy_all_trans))
+
+groups <- data.frame(sample_data(phy_all_trans)) %>%
+  dplyr::select(Sample_type4)
+
+# Replace "Subglacial" with 1
+groups$Sample_type4[groups$Sample_type4 == "Subglacial"] <- 1
+
+# Replace "Exp Hot Soil" with 2
+groups$Sample_type4[groups$Sample_type4 == "Exp Hot Soil"] <- 2
+
+# Replace "Tramway Ridge" with 3
+groups$Sample_type4[groups$Sample_type4 == "Tramway Ridge"] <- 3
+
+groupsv <- groups$Sample_type4
+
+
+ind_val <- multipatt(otu_table1, groupsv,
+                     control = how(nperm=999))
+
+summary(ind_val)
+
+#Phylum
+phy_phylum <- tax_glom(phy_all_trans, taxrank="Phylum", NArm=TRUE)
+
+otu_table2 <- as.data.frame(otu_table(phy_phylum))
+tax_table2 <- as.data.frame(tax_table(phy_phylum))
+
+
+colnames(otu_table2) <- tax_table2$Phylum
+
+ind_val_phylum <- multipatt(otu_table2, groupsv,
+                     control = how(nperm=999))
+
+summary(ind_val_phylum)
+
+#class
+phy_class <- tax_glom(phy_all_trans, taxrank="Class", NArm=TRUE)
+
+otu_table3 <- as.data.frame(otu_table(phy_class))
+tax_table3 <- as.data.frame(tax_table(phy_class))
+
+
+colnames(otu_table3) <- tax_table3$Class
+
+ind_val_class <- multipatt(otu_table3, groupsv,
+                     control = how(nperm=999))
+
+summary(ind_val_class)
+
+#family
+phy_family <- tax_glom(phy_all_trans, taxrank="Family", NArm=TRUE)
+
+otu_table4 <- as.data.frame(otu_table(phy_family))
+tax_table4 <- as.data.frame(tax_table(phy_family))
+
+
+colnames(otu_table4) <- tax_table4$Family
+
+#remove duplicated "Unknown Family"
+otu_table4 <- otu_table4 %>%
+  dplyr::select(-138)
+
+ind_val_family <- multipatt(otu_table4, groupsv,
+                     control = how(nperm=999))
+
+summary(ind_val_family)
+
+#####ASV level exploration, using 0.85 as a cutoff for stat
+indic_asv <- read.csv("indic_spec.csv")
+
+tax_table1.1 <- tax_table1 %>%
+  rownames_to_column(var = "OTU")
+
+indic_asv2 <- dplyr::left_join(indic_asv, tax_table1.1, by = "OTU")
+
+#write.csv(indic_asv2, "indicator_asv_final.csv")
+```
+
+
+
+#### Fig Stacked Barplot
+
+```{r, fig.width=20, fig.height=11}
+## Phylum
+
+# Data for plotting
+erebus_p <- phy_all_trans %>% psmelt() 
+
+# pal_barn3 <- RColorBrewer::brewer.pal(4, "PRGn")
+# pal_barn1 <- RColorBrewer::brewer.pal(8, "Spectral")
+# pal_barn2 <- RColorBrewer::brewer.pal(8, "PiYG")
+# pal_barnf <- c("black", pal_barn1, pal_barn2, pal_barn3, "#636363")
+# 
+
+
+#new colors
+
+
+Trine_palette <- c("#D53E4F", "#F46D43", "#FDAE61" ,"#FEE08B", "#E6F598", "#ABDDA4", "#66C2A5", "#3288BD",  "#C51B7D",  "#DE77AE" , 
+                    "#a3cde7", "#FDE0EF", "#1b786a", "#b8e7d2", "#7FBC41", "#4D9221" ,"#a344c1", "#C2A5CF" ,"#255687", "#5f2671")
+  
+
+pal_barnf <- c("black", Trine_palette, "#636363")
+#names(pal_barnf) = x 
+
+
+
+erebus_p["Phylum"][which(erebus_p$Abundance < 0.01), ] <- "Phyla < 1 %"
+erebus_p$Phylum[is.na(erebus_p$Phylum)] = "Unassigned"
+
+x <- c("Phyla < 1 %", "Acidobacteriota", "Actinobacteriota", "Armatimonadota", "Bacteroidota", 
+       "Bdellovibrionota", "Chloroflexi", "Crenarchaeota", "Cyanobacteria", "Deinococcota", 
+       "Fervidibacteria", "Firmicutes", "GAL15", "Gemmatimonadota", "Myxococcota", "Nitrospirota", 
+       "Patescibacteria", "Planctomycetota", "Proteobacteria", "Verrucomicrobiota", "WPS-2", "Unassigned")   #We need 22 colors
+
+#Important! It couples the colours to the different phyla in the order as mentioned in x above
+names(pal_barnf) = x
+
+erebus_p$Phylum <- factor(as.character(erebus_p$Phylum), levels=x)
+erebus_p <- erebus_p[order(erebus_p$Phylum),]
+
+# Plot 
+plot_phylum <- ggplot(erebus_p, aes(x = Name, y = Abundance, fill = Phylum)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = pal_barnf) +theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 9),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.x  = element_text(size=9, vjust = 0.5, hjust = 1, angle = 90),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    plot.title = element_text(size=20, hjust = -0.05),
+    legend.text = element_text(size=9), 
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    legend.key.width = unit(0.3, "cm"),
+    legend.key.height=unit(0.3,"cm")) +
+  coord_cartesian(expand = FALSE)
+
+
+ploy_phylym_save <- plot_phylum + facet_grid(~Sample_type4, scales = "free", space = "free")
+
+ploy_phylym_save$data$Sample_type4 <- factor(ploy_phylym_save$data$Sample_type4, levels = c("Subglacial", "Exp Hot Soil", "Western Crater", "Tramway Ridge"))
+
+
+ploy_phylym_save <- ploy_phylym_save + 
+                    theme(panel.margin=unit(.07, "lines"), 
+                         panel.border = element_rect(color = "black", fill = NA, size = 1), 
+                         strip.background = element_rect(color = "black", size = 1))
+
+plot_phylum_save_all <- ploy_phylym_save
+plot_phylum_save_all
+
+```
+
+
+```{r}
+#Use this code to investigate the percentage of different phyla in the different samples. For example:
+# How many Actinos in Crater 8 < 3cm?
+Crater68cm <- erebus_p[erebus_p$Sample == "Crater8 <3cm ",]
+Crater68cm
+Actinos <- Crater68cm[Crater68cm$Phylum == "Actinobacteriota",]
+sum(Actinos$Abundance)*100  #32.94139 %
+
+```
+
+```{r}
+# How many Unclassified in different Tramway Rigde samples? And what are they?
+TR_9A <- erebus_p[erebus_p$Sample == "TR Mat 9A",]
+TR_9A
+Unas <- TR_9A[TR_9A$Phylum == "Unassigned",]
+sum(Unas$Abundance)*100  #20.2 %
+
+TR_9A <- erebus_p[erebus_p$Sample == "TR Mat 7A",]
+TR_9A
+Unas <- TR_9A[TR_9A$Phylum == "Unassigned",]    #ASV_4 again!
+sum(Unas$Abundance)*100  #11.2 %
+
+
+TR_9A <- erebus_p[erebus_p$Sample == "TR_OS1",]
+TR_9A
+Unas <- TR_9A[TR_9A$Phylum == "Unassigned",]    #ASV_4 again!
+sum(Unas$Abundance)*100  #7.6 %
+
+TR_9A <- erebus_p[erebus_p$Sample == "TR_OS1 - 15",]
+TR_9A
+Unas <- TR_9A[TR_9A$Phylum == "Unassigned",]
+sum(Unas$Abundance)*100  #5.2 %
+
+TR_9A <- erebus_p[erebus_p$Sample == "OS3",]
+TR_9A
+Unas <- TR_9A[TR_9A$Phylum == "Unassigned",]
+sum(Unas$Abundance)*100  #5.5 %
+
+TR_9A <- erebus_p[erebus_p$Sample == "TR_OS1 - 65",]
+TR_9A
+Unas <- TR_9A[TR_9A$Phylum == "Unassigned",]  #ASV_4
+sum(Unas$Abundance)*100  #4 %
+
+```
+
+
+Add division into groups
+```{r}
+
+merged_group <- phyloseq::merge_samples(phy_all,"Sample_type4") # 5 samples
+sample_data(merged_group)$Sample_type4 <- as.character(sample_names(merged_group))
+
+temp <- as.data.frame(as.matrix(sample_data(merged_group))) %>%
+  mutate(Sample_typeX = case_when(
+    startsWith(Sample_type4, "Subglacial") ~ "Subglacial",
+    startsWith(Sample_type4, "Tramway Ridge") ~ "Exposed",
+    startsWith(Sample_type4, "Exp Hot Soil") ~ "Exposed",
+    startsWith(Sample_type4, "Western Crater") ~ "Exposed",
+    ))
+sample_data(merged_group)$Sample_type3 <- temp$Sample_typeX
+
+    
+# Data for plotting - process the same way as Stephen did:
+merged_group_trans <- transform_sample_counts(merged_group, function(x) x/sum(x))
+merged_group_trans_p <- merged_group_trans %>% psmelt()
+
+
+# reorder phyla before naming the Phyla < 1% and the Unassigned. Otherwise it doesnt work for some reason.
+merged_group_trans_p$Phylum <- factor(as.character(merged_group_trans_p$Phylum), levels=x)
+merged_group_trans_p <- merged_group_trans_p[order(merged_group_trans_p$Phylum),]
+
+
+length(merged_group_trans_p$Phylum[which(merged_group_trans_p$Phylum == "Phyla < 1 %")])
+merged_group_trans_p["Phylum"][which(merged_group_trans_p$Abundance < 0.01), ] <- "Phyla < 1 %"
+merged_group_trans_p$Phylum[is.na(merged_group_trans_p$Phylum)] = "Unassigned"
+
+ggplot(merged_group_trans_p, aes(x = Sample_type4, y = Abundance, fill = Phylum)) +
+  geom_bar(stat = "identity", width = 0.98) +
+  scale_fill_manual(values = pal_barnf)
+
+
+```
+
+
+```{r,fig.width=20, fig.height=11}
+
+# Plot 
+plot_phylum <- ggplot(merged_group_trans_p, aes(x = Sample_type4, y = Abundance, fill = Phylum)) +
+  geom_bar(stat = "identity", width = 0.98) +
+  scale_fill_manual(values = pal_barnf) + theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 10),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size=9),
+    legend.position = "none",
+    axis.text.x  = element_text(size=9, vjust = 0.5, hjust = 0.5, angle = 0),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    plot.title = element_text(size=20, hjust = -0.05)) +
+  coord_cartesian(expand = FALSE)
+
+plot_phylum$data$Sample_type4 <- factor(plot_phylum$data$Sample_type4, levels = c("Subglacial", "Exp Hot Soil", "Western Crater", "Tramway Ridge"))
+plot_phylum$data$Sample_type3 <- factor(plot_phylum$data$Sample_type3, levels = c("Subglacial", "Exposed"))
+
+ploy_phylym_save <- plot_phylum + facet_grid(~Sample_type3, scales = "free", space = "free") + 
+  theme(panel.margin=unit(.05, "lines"),
+        panel.border = element_rect(color = "black", fill = NA, size = 1.2), 
+        strip.background = element_rect(color = "black", size = 1),
+        legend.text = element_text(size=25), 
+                                      legend.title = element_text(size=30))
+#ploy_phylym_save
+
+plot_phylum_save_groups <- ploy_phylym_save
+
+
+```
+
+
+```{r}
+
+phyum_abundance <- (plot_phylum_save_groups + theme(legend.position="none"))/ (plot_phylum_save_all + theme(legend.position="bottom", 
+                                                                                                         legend.title = element_blank(),
+                                                                                                         legend.text = element_text(size=9), 
+                                                                                                         ))
+phyum_abundance
+
+phyum_abundance2 <- ggarrange(plot_phylum_save_groups,
+                              plot_phylum_save_all,
+                              nrow = 2,
+                              labels = c("A", "B"),
+                              heights = c(0.45, 1))
+
+phy_all2 <- ggarrange(phyum_abundance2,
+                      bps_p,
+                      nrow = 2,
+                      labels = c(""),
+                      heights = c(1, 0.6))
+
+ggsave("barplots_phylum_all3.png", phy_all2, path = "Saved_plots/",
+       width = 240, height = 250, units = "mm", dpi = 300)
+ggsave("barplots_phylum_all3.svg", phy_all2, path = "Saved_plots/",
+       width = 240, height = 250, units = "mm", dpi = 300)
+
+```
+
+```{r}
+ggsave(
+  "TBR03.1_phyum_abundance2.pdf",
+  plot = phyum_abundance2,
+  path = "Saved_plots/",
+  device = "pdf",
+  width = 13,
+  height = 10,
+)
+
+```
+
+
+# Exploring the data further
+
+```{r}
+colnames(tax_table(phy_all_trans))
+
+phy_na <- subset_taxa(phy_all_trans, is.na(Order))
+
+erebus_p_na <- phy_na %>% psmelt()
+
+erebus_na_test <- erebus_p_na %>%
+  dplyr::group_by(Sample_type4, Sample) %>%
+  dplyr::summarise(avg1 = mean(Abundance)) %>%
+  dplyr::summarise(avg2 = mean(avg1)) %>%
+  ungroup(.) %>%
+  as.data.frame(.)
+
+erebus_na_test
+  
+erebus_na_test2 <- erebus_p_na %>%
+  dplyr::group_by(Sample_type3, Sample) %>%
+  dplyr::summarise(avg1 = mean(Abundance)) %>%
+  ungroup(.) %>%
+  as.data.frame(.)
+
+env_data <- data.frame(sample_data(phy_na)) %>%
+  rownames_to_column(var = "Sample")
+
+temp <- env_data %>%
+  dplyr::select(Sample, Temperature)
+
+na_temp <- left_join(erebus_na_test2, temp, by = "Sample") %>%
+  dplyr::filter(!is.na(Temperature)) %>%
+  dplyr::filter(Sample != "TR Mat 9A") %>%
+  dplyr::filter(Sample != "TR Mat 7A")
+  
+
+na_temp_plot <- ggplot(na_temp, aes(x = Temperature, y = avg1, 
+                       color = Sample_type3)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  theme_bw()
+
+na_temp_plot
+
+model <- lm(avg1 ~ Temperature, data = na_temp)
+
+# Print the summary of the regression model
+summary(model)
+
+```
+
+
+
+```{r, fig.height=20, fig.width=30}
+phy_na
+
+erebus_p_na["OTU"][which(erebus_p_na$Abundance < 0.01), ] <- "OTU < 1 %"
+
+
+# Plot 
+plot_na <- ggplot(erebus_p_na, aes(x = Name, y = Abundance, fill = OTU)) +
+  geom_bar(stat = "identity") +theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 16),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.x  = element_text(size=16, vjust = 0.5, hjust = 1, angle = 90),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=16),
+    axis.title.y = element_text(size=16),
+    plot.title = element_text(size=20, hjust = -0.05),
+    legend.text = element_text(size=25), 
+    legend.title = element_text(size=30, angle = 90),
+    legend.position = "bottom") +
+  coord_cartesian(expand = FALSE)
+
+
+plot_na_save <- plot_na + facet_grid(~Sample_type4, scales = "free", space = "free")
+
+#plot_Class$data$Sample_type3 <- factor(plot_Class$data$Sample_type3, levels = c("Subglacial", "Exposed"))
+plot_na_save$data$Sample_type4 <- factor(plot_na_save$data$Sample_type4, levels = c("Subglacial", "Exp Hot Soil", "Western Crater", "Tramway Ridge"))
+
+plot_na_save
+```
+
+How do I check the abundance of the different ASVs?
+
+```{r}
+abundance_tab <- plot_na_save$data[1:35,1:3]
+abundance_tab$abundance2 <- abundance_tab$Abundance * 100
+abundance_tab
+```
+
+Get the ASVs to BLAST
+```{r}
+
+seqs["ASV_4"]
+seqs["ASV_65"]
+seqs["ASV_66"]
+seqs["ASV_482"]
+
+```
+
+

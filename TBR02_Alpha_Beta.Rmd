@@ -1,0 +1,311 @@
+---
+title: "01_Alpha_Beta"
+author: "Trine"
+date: "2023-01-11"
+output: html_document
+---
+
+```{r libraries}
+library("ggplot2")
+library("phyloseq")
+library(here)
+library(vegan) #to test which groupings that makes sense to make
+```
+
+```{r read_phyloseq}
+
+# WHEN YOU OPEN THIS FILE ----
+phy_all <- readRDS("phyloseq_files/physeq_all")
+
+#otu_table(phy_all) # it still has the seqs instead of ASV_1, ASV_2, etc...
+
+new.names <- paste0("ASV_", seq(ntaxa(phy_all))) # define new names ASV_1, ASV_2, ...
+seqs <- taxa_names(phy_all) # store sequences
+names(seqs) <- new.names # make map from ASV to full sequence
+taxa_names(phy_all) <- new.names # rename 
+phy_all
+
+
+initial_ntaxa <- ntaxa(phy_all)
+
+#Clean 
+phy_all <- subset_taxa (phy_all, (Kingdom !="Eukaryota"))
+phy_all <- subset_taxa (phy_all, (Order !="Chloroplast") | is.na(Order))    
+phy_all <- subset_taxa (phy_all, (Family != "Mitochondria") | is.na(Family))
+cat("\n")
+cat("\nInitial number of taxa: ", initial_ntaxa)
+cat("\nNumber of taxa excluding eukaryotes, chloroplast and mitochondrial seqs: ", ntaxa(phy_all))
+cat("\nDifference: ", initial_ntaxa - ntaxa(phy_all))
+phy_all
+
+```
+
+## Alpha Diversity
+
+
+```{r AlphaDiv boxplot, warning=FALSE,fig.height=6, fig.width=12}
+
+#exposed_col <- "#F9A620"
+#subglacial_col <- "#67a9cf"
+subcat_pal <- c("darkorange2","#386cb0","#7fc97f")
+
+
+p_richness_box <-  
+  plot_richness(phy_all, x="Sample_type4", measures=c("Shannon")) + 
+  geom_boxplot(aes(fill=Sample_type4), alpha=0.8) +    
+  labs(y="Shannon Index")+
+  facet_grid(~Sample_type3, scales = "free", space = "free") +
+  
+  theme_bw()+
+  
+  theme(text= element_text(size=20),
+        axis.text.x = element_text(size=20, angle =0 , hjust = 0.5, vjust = 0), 
+        axis.title.x = element_text(size = 20),
+        axis.title.x.bottom = element_blank(),
+        axis.text.y = element_text(size = 20), axis.title.y = element_text(size=20),
+        strip.text.x = element_text(size = 19),
+        legend.text = element_text(size=25), 
+        legend.title = element_text(size=30), 
+        panel.background = element_blank(),
+        strip.background = element_blank(),
+        legend.position="none",
+        ) +
+  scale_fill_manual(values = subcat_pal)
+
+p_richness_box$layers <- p_richness_box$layers[-1]
+
+p_richness_box_save <- p_richness_box + 
+  geom_point(size = 3, position = position_jitter(width = 0.2), color= "#333333") +
+  theme(axis.text.x = element_blank())
+                          
+p_richness_box_save
+```
+
+## Beta Diversity
+```{r,fig.height= 9, fig.width= 15, warning=FALSE}
+
+phy_all_t <- microbiome::transform(phy_all, "clr")  #investigate what this does
+ordu_subs = ordinate(phy_all_t, "PCoA", "unifrac")
+
+p_beta <- plot_ordination(phy_all_t, ordu_subs, color="Sample_type4", shape = "Sample_type3") +
+          geom_point(size=14, alpha=0.7) +
+          guides(shape = guide_legend(order = 1))+ 
+          labs(shape = "Category", colour = "Subcategory")+
+          theme_bw() +
+          theme(legend.title = element_text(size=17, hjust = 0), 
+                legend.text = element_text(size = 15),
+                axis.title.x = element_text(size = 20), 
+                axis.title.y = element_text(size = 20),
+                axis.text.x = element_text(size=13),
+                axis.text.y = element_text(size=13),
+                legend.key.size = unit(0.4, "cm"), 
+                legend.position = c(-0.35,0.175))
+
+
+p_beta_save <- p_beta + scale_color_manual(values=subcat_pal)
+
+
+p_beta + scale_color_manual(values=subcat_pal)+ geom_text(mapping = aes(label = Name), size = 8, vjust=1.5)
+p_beta_save
+
+```
+
+
+```{r,fig.height= 8, fig.width= 14}
+
+ggplot_empt <- ggplot() + theme_classic() + theme(axis.line = element_line(colour = "white"))
+
+pp_alpha1 <- ggarrange(p_richness_box_save, ggplot_empt, 
+                       ncol =1, 
+                       nrow=2, 
+                       heights = c(1, 0.9))
+pp_alpha1
+
+fig_alpha_beta <- ggarrange(pp_alpha1, p_beta_save, 
+          ncol =2, 
+          nrow=1, 
+          widths = c(0.5, 1))
+fig_alpha_beta
+
+ggsave("Saved_plots/TBR02_fig_alpha_beta.pdf",
+       fig_alpha_beta,
+       width = 14,
+       height = 8,
+       device = "pdf")
+
+```
+
+
+STEPHEN1: Delete this below? Or is it cool to have? The two chunks below are just exploring.
+
+### Investigating which ordination we like
+```{r exploring ordinations, warning=FALSE, message=FALSE, fig.height=13, fig.width=20}
+
+library("plyr"); packageVersion("plyr")
+
+#prune taxa and see if it influences the ordination plots.
+topASVnames <- names(sort(taxa_sums(phy_all), decreasing = TRUE))[1:1000]  # -> if you want to look at only top 20, add [1:20]
+phy_all_top <- prune_taxa(topASVnames, phy_all) #ASV.top200 is now a phyloseq with the 200 most
+
+
+#phy_all_top <- phy_all
+dist = "unifrac"
+ord_meths = c("DCA", "CCA", "RDA", "DPCoA", "NMDS", "MDS", "PCoA")
+plist = llply(as.list(ord_meths), function(i, phy_all_top, dist){
+        ordi = ordinate(phy_all_top, method=i, distance=dist)
+        plot_ordination(phy_all_top, ordi, "Name", color="Sample_type4",label="Name")
+        }, phy_all_top, dist)
+
+names(plist) <- ord_meths
+
+pdataframe = ldply(plist, function(x){
+  df = x$data[, 1:2]
+  colnames(df) = c("Axis_1", "Axis_2")
+  return(cbind(df, x$data))
+  })
+
+names(pdataframe)[1] = "method"
+pdataframe
+
+p = ggplot(pdataframe, aes(Axis_1, Axis_2, color=Sample_type4, label=Name)) + geom_point(size=5, alpha=0.5) + 
+  facet_wrap(~method, scales="free")+ #scale_colour_gradient(low = "navy", high = "red")+ 
+  theme_bw()+geom_text(aes(label=Name),hjust=0, vjust=0, size=5)+ 
+  ggtitle("Distance: unifrac")
+p
+
+p_sub_exp = ggplot(pdataframe, aes(Axis_1, Axis_2, color=Sample_type3, label=Name)) + geom_point(size=5, alpha=0.5) + facet_wrap(~method, scales="free")+ #scale_colour_gradient(low = "navy", high = "red")+ 
+  theme_bw()+geom_text(aes(label=Name),hjust=0, vjust=0, size=5)+ 
+  ggtitle("Distance: unifrac")
+p_sub_exp
+
+p_ord_pH = ggplot(pdataframe, aes(Axis_1, Axis_2, color=pH, label=Name)) + geom_point(size=5, alpha=0.5) + facet_wrap(~method, scales="free")+ #scale_colour_gradient(low = "navy", high = "red")+ 
+  scale_colour_gradient(low = "green4", high = "gold")+ theme(legend.title = element_text(size=10))+
+  theme_bw()+geom_text(aes(label=Name),hjust=0, vjust=0, size=5)+ 
+  ggtitle("Distance: unifrac")
+p_ord_pH
+
+p_ord_temp = ggplot(pdataframe, aes(Axis_1, Axis_2, color=Temperature, label=Name)) + geom_point(size=5, alpha=0.5) + facet_wrap(~method, scales="free")+ #scale_colour_gradient(low = "navy", high = "red")+ 
+  scale_colour_gradient(low = "blue", high = "red")+ theme(legend.title = element_text(size=10))+
+  theme_bw()+geom_text(aes(label=Name),hjust=0, vjust=0, size=5)+ 
+  ggtitle("Distance: unifrac")
+p_ord_temp
+
+```
+
+```{r,fig.height= 13, fig.width= 20}
+
+theme_beta <- theme(legend.title = element_text(size=30, hjust = 0), 
+                    legend.text = element_text(size = 25),
+                    axis.title.x = element_text(size = 20), 
+                    axis.title.y = element_text(size = 20),
+                    axis.text.x = element_text(size=15),
+                    axis.text.y = element_text(size=15),
+                    legend.key.size = unit(0.99, "cm"))
+subcat_shapes <- c(18,19,17,15,16)
+
+
+p_beta_ph <- plot_ordination(phy_all_t, ordu_subs, color="pH", shape = "Sample_type4") +
+                            geom_point(size=14, alpha=0.7) +
+                            guides(shape = guide_legend(order = 1))+ 
+                            labs(shape = "Subcategory", colour = "pH")+
+                            theme_bw() + theme_beta + scale_colour_gradient(low = "green4", high = "gold") + scale_shape_manual(values=subcat_shapes)
+p_beta_ph 
+p_beta_ph + geom_text(mapping = aes(label = Name), size = 8, vjust=1.5)
+
+
+p_beta_T <- plot_ordination(phy_all_t, ordu_subs, color="Temperature", shape = "Sample_type4") +
+                            geom_point(size=14, alpha=0.7) +
+                            guides(shape = guide_legend(order = 1))+ 
+                            labs(shape = "Subcategory", colour = "Temperature (°C)")+
+                            theme_bw() + theme_beta + scale_colour_gradient(low = "navy", high = "red") + scale_shape_manual(values=subcat_shapes)
+p_beta_T + geom_text(mapping = aes(label = Name), size = 8, vjust=1.5)
+
+
+p_beta_ca <- plot_ordination(phy_all_t, ordu_subs, color="Ca", shape = "Sample_type4") +
+                              geom_point(size=14, alpha=0.7) +
+                              guides(shape = guide_legend(order = 1))+ 
+                              labs(shape = "Subcategory", colour = "Calcium (ppb)")+
+                              theme_bw() + theme_beta + scale_colour_gradient(low = "purple4", high = "orange") + scale_shape_manual(values=subcat_shapes)
+p_beta_ca + geom_text(mapping = aes(label = Name), size = 8, vjust=1.5)
+```
+## Add statistics
+
+
+In this script we need to figure out how to divide our samples into groups.
+Show that the groups you choose differ significantly in microbial composition. 
+
+```{r}
+#filter and transform data
+
+erebusf <- phy_all
+erebusfr <- microbiome::transform(erebusf, "clr")
+unifrac.erebusfr <- phyloseq::distance(erebusfr, method = "unifrac")   #WHAT is the difference of distance and ordinate???
+
+```
+
+#### Environmental & Biological data analysis
+```{r}
+
+# From the beta diversity plot, it looks like several types of sites might be significantly different based on the microbial communities:
+# Exposed and subglacial sites seems to differ, but also smaller groupings like Cave, Circums, Tramway, Crater, Westerb Crater.
+
+# Now we will perform a PERMANOVA to see if these groups of sites have different centroids
+# This will be complemented with a Permutation test for homogeneity of multivariate dispersions 
+# -if this doesn't come back significant we cam trust that the PERMANOVA results show
+# differences in data centroids and not in data dispersion
+
+# Create a data frame with the environmental data 
+envdata <- data.frame(sample_data(erebusfr))
+erebusf <- phy_all
+erebusfr <- microbiome::transform(erebusf, "clr")
+#erebusfr<- transform_sample_counts(erebusf, function(x) x / sum(x) )
+unifrac.erebusfr <- phyloseq::distance(erebusfr, method = "unifrac")
+#unifrac.erebusfr <- phyloseq::distance(erebusfr, method = "wunifrac")
+
+
+#test with unifrac (doesnt take the microbial community into account)
+
+# PERMANOVA on Sample_type4: Exp hot soil, Tramway, Subglacial
+unique(envdata$Sample_type4) # 
+adonis2(unifrac.erebusfr ~ Sample_type4, data = envdata) # 0.001 ***
+disp.Transect<- betadisper(unifrac.erebusfr, envdata$Sample_type4) 
+permutest(disp.Transect) # 0.043 *
+
+# PERMANOVA on "Subglacial" "Exposed" 
+unique(envdata$Sample_type3) 
+adonis2(unifrac.erebusfr ~ Sample_type3, data = envdata) # 0.001 ***
+disp.site <- betadisper(unifrac.erebusfr, envdata$Sample_type3) # 0.024 *
+permutest(disp.site)
+
+# PERMANOVA on "Cave"           "Circum"         "Tramway"        "Crater"         "Western_Crater" "Mat"
+unique(envdata$Sample_type2) # 
+adonis2(unifrac.erebusfr ~ Sample_type2, data = envdata) # 0.001 ***
+disp.Transect<- betadisper(unifrac.erebusfr, envdata$Sample_type2) 
+permutest(disp.Transect) # 0.758
+
+
+# PERMANOVA on "Other"          "Tramway"        "Western_Crater"
+unique(envdata$Sample_type1) # 
+adonis2(unifrac.erebusfr ~ Sample_type1, data = envdata) # 0.001 ***
+disp.Transect<- betadisper(unifrac.erebusfr, envdata$Sample_type1) 
+permutest(disp.Transect) #0.001 ***
+# Tramway Ridge, Western Crater, and Other, have significantly differently dispersed values.
+
+# PERMANOVA on "Other"   "Tramway" , Should I just make a ttest here?
+unique(envdata$Sample_type0) # 
+adonis2(unifrac.erebusfr ~ Sample_type0, data = envdata) # 0.001 ***
+disp.Transect<- betadisper(unifrac.erebusfr, envdata$Sample_type0)
+permutest(disp.Transect) # 0.001 *** 
+#Tramway and Other have significantly differently dispersed values. 
+
+
+#STEPHEN2: With pairwaise adonis, the different categories do look different, but since we concluded that they have dispersed values, I doesnt count or?
+# Should I just delete the code below?
+
+pairwise.adonis(unifrac.erebusfr, envdata$Sample_type3)
+pairwise.adonis(unifrac.erebusfr, envdata$Sample_type4)
+pairwise.adonis(unifrac.erebusfr, envdata$Sample_type0)
+
+
+
+```

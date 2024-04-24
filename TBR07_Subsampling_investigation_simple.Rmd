@@ -1,0 +1,297 @@
+---
+title: "Subsampling"
+author: "Trine"
+date: "2023-02-01"
+output: html_document
+---
+
+```{r libraries}
+library("ggplot2")
+library("phyloseq")
+library(vegan) #to test which groupings that makes sense to make
+```
+
+```{r functions}
+
+subcat_pal <- c("darkorange2","#386cb0","#7fc97f")
+
+```
+
+```{r read_phyloseq}
+path <- "C:/Users/trine/OneDrive - Danmarks Tekniske Universitet/DTU2/NZ Project 2022/DADA2_Analysis_011221/My_own_ASV_generation/nice_scripts2/"
+setwd(path)
+
+# WHEN YOU OPEN THIS FILE ----
+phy_all <- readRDS("phyloseq_files/physeq_all")
+
+#otu_table(phy_all) # it still has the seqs instead of ASV_1, ASV_2, etc...
+
+new.names <- paste0("ASV_", seq(ntaxa(phy_all))) # define new names ASV_1, ASV_2, ...
+seqs <- taxa_names(phy_all) # store sequences
+names(seqs) <- new.names # make map from ASV to full sequence
+taxa_names(phy_all) <- new.names # rename 
+phy_all
+
+
+initial_ntaxa <- ntaxa(phy_all)
+
+#Clean 
+phy_all <- subset_taxa (phy_all, (Kingdom !="Eukaryota"))
+phy_all <- subset_taxa (phy_all, (Order !="Chloroplast") | is.na(Order))    
+phy_all <- subset_taxa (phy_all, (Family != "Mitochondria") | is.na(Family))
+cat("\n")
+cat("\nInitial number of taxa: ", initial_ntaxa)
+cat("\nNumber of taxa excluding eukaryotes, chloroplast and mitochondrial seqs: ", ntaxa(phy_all))
+cat("\nDifference: ", initial_ntaxa - ntaxa(phy_all))
+sample_data(phy_all)
+
+```
+
+## Subsapmling for pH
+
+```{r samples with similar pH to caves}
+envdata <- sample_data(phy_all)
+env_vec <- envdata[ which(envdata$Sample_type4 == "Subglacial"), ]$pH
+
+# Find min and max pH for caves
+sd <- sd(env_vec)
+
+minval <- min(env_vec)-sd
+maxval <- max(env_vec)+sd
+
+minval <- 5.5
+maxval <- 7
+
+#Find the exposed samples that has similar pHs. 
+sample_data(phy_all)$subset <- 0
+for (i in 1:nrow(sample_data(phy_all))){
+  if ( isTRUE(sample_data(phy_all)$pH[i] > minval & sample_data(phy_all)$pH[i] < maxval) == TRUE ){
+    sample_data(phy_all)$subset[i] = 1
+  }
+}
+
+#subset samples that have similar pH
+phy_subset <- subset_samples(phy_all, subset==1)
+sample_names(phy_subset)
+length(sample_names(phy_subset))
+sample_data(phy_subset)
+
+
+```
+
+```{r,fig.height= 13, fig.width= 20, warning=FALSE}
+#phy_all <- microbiome::transform(phy_all, "clr")
+#
+
+theme_beta <- theme(legend.title = element_text(size=30, hjust = 0), 
+                    legend.text = element_text(size = 25),
+                    axis.title.x = element_text(size = 20), 
+                    axis.title.y = element_text(size = 20),
+                    axis.text.x = element_text(size=15),
+                    axis.text.y = element_text(size=15),
+                    legend.key.size = unit(0.99, "cm"))
+subcat_shapes <- c(18,8,17,15,16)
+
+
+phy_all_t <- microbiome::transform(phy_subset, "clr")  #investigate what this does
+ordu_subs = ordinate(phy_all_t, "PCoA", "unifrac")
+
+p_beta <- plot_ordination(phy_all_t, ordu_subs, color="Sample_type4", shape = "Sample_type3") +
+          geom_point(size=14, alpha=0.7) +
+          guides(shape = guide_legend(order = 1))+ 
+          labs(shape = "Category", colour = "Subcategory")+
+          theme_bw() +
+          theme(legend.title = element_text(size=17, hjust = 0), 
+                legend.text = element_text(size = 15),
+                axis.title.x = element_text(size = 20), 
+                axis.title.y = element_text(size = 20),
+                axis.text.x = element_text(size=13),
+                axis.text.y = element_text(size=13),
+                legend.key.size = unit(0.4, "cm"), 
+                legend.position = c(-0.35,0.175))
+
+subcat_pal <- c("darkorange2","#386cb0","#7fc97f")
+
+p_beta_save <- p_beta + scale_color_manual(values=subcat_pal)
+p_beta_save
+
+p_beta + scale_color_manual(values=subcat_pal)+ geom_text(mapping = aes(label = Name), size = 8, vjust=1.5)
+
+
+p_beta_ph <- plot_ordination(phy_all_t, ordu_subs, color="pH", shape = "Sample_type4") +
+                            geom_point(size=14, alpha=0.8) +
+                            guides(shape = guide_legend(order = 1))+ 
+                            labs(shape = "Subcategory", colour = "pH")+
+                            theme_bw() + theme_beta + scale_colour_gradient(low = "green4", high = "gold") + scale_shape_manual(values=subcat_shapes)
+p_beta_ph 
+p_beta_ph + geom_text(mapping = aes(label = Name), size = 8, vjust=1.5)
+
+```
+
+
+```{r}
+
+#add statistics
+# From the beta diversity plot, it looks like several types of sites might be significantly different based on the microbial communities:
+# Exposed and subglacial sites seems to differ, but also smaller groupings like Cave, Circums, Tramway, Crater, Westerb Crater.
+
+# Now we will perform a PERMANOVA to see if these groups of sites have different centroids
+# This will be complemented with a Permutation test for homogeneity of multivariate dispersions 
+# -if this doesn't come back significant we cam trust that the PERMANOVA results show
+# differences in data centroids and not in data dispersion
+
+# Create a data frame with the environmental data 
+envdata <- data.frame(sample_data(phy_subset))
+erebusf <- phy_subset
+erebusfr <- microbiome::transform(erebusf, "clr")
+#erebusfr<- transform_sample_counts(erebusf, function(x) x / sum(x) )
+unifrac.erebusfr <- phyloseq::distance(erebusfr, method = "unifrac")
+#unifrac.erebusfr <- phyloseq::distance(erebusfr, method = "wunifrac")
+
+
+#test with unifrac (doesnt take the microbial community into account)
+
+# PERMANOVA on Sample_type4: Exp hot soil, Tramway, Subglacial
+unique(envdata$Sample_type4) # 
+adonis2(unifrac.erebusfr ~ Sample_type4, data = envdata) # 0.001 ***
+disp.Transect<- betadisper(unifrac.erebusfr, envdata$Sample_type4) 
+permutest(disp.Transect) # 0.029 *
+
+
+# PERMANOVA on "Subglacial" "Exposed" 
+unique(envdata$Sample_type3) 
+adonis2(unifrac.erebusfr ~ Sample_type3, data = envdata) # 0.001 ***
+disp.site <- betadisper(unifrac.erebusfr, envdata$Sample_type3) # 0.187
+permutest(disp.site)
+
+```
+
+
+
+
+## Subsapmling for Temperature
+
+
+```{r}
+envdata <- sample_data(phy_all)
+env_vec <- envdata[ which(envdata$Sample_type4 == "Subglacial"), ]$Temperature
+
+#Define min and max values
+sd <- sd(env_vec)
+
+minval <- min(env_vec)-sd
+maxval <- max(env_vec)+sd
+
+minval <- 5
+maxval <- 35
+
+#Find the exposed samples that has similar Temperature 
+sample_data(phy_all)$subset <- 0
+for (i in 1:nrow(sample_data(phy_all))){
+  if ( isTRUE(sample_data(phy_all)$Temperature[i] > minval & sample_data(phy_all)$Temperature[i] < maxval) == TRUE ){
+    sample_data(phy_all)$subset[i] = 1
+  }
+}
+
+#subset samples that have similar Temperature
+phy_subset <- subset_samples(phy_all, subset==1)
+sample_names(phy_subset)
+
+```
+
+```{r,fig.height= 13, fig.width= 20, warning=FALSE}
+#phy_all <- microbiome::transform(phy_all, "clr")
+
+
+phy_all_t <- microbiome::transform(phy_subset, "clr")  #investigate what this does
+ordu_subs = ordinate(phy_all_t, "PCoA", "unifrac")
+
+p_beta <- plot_ordination(phy_all_t, ordu_subs, color="Sample_type4", shape = "Sample_type3") +
+          geom_point(size=14, alpha=0.7) +
+          guides(shape = guide_legend(order = 1))+ 
+          labs(shape = "Category", colour = "Subcategory")+
+          theme_bw() +
+          theme(legend.title = element_text(size=17, hjust = 0), 
+                legend.text = element_text(size = 15),
+                axis.title.x = element_text(size = 20), 
+                axis.title.y = element_text(size = 20),
+                axis.text.x = element_text(size=13),
+                axis.text.y = element_text(size=13),
+                legend.key.size = unit(0.4, "cm"), 
+                legend.position = c(-0.35,0.175))
+
+
+p_beta_save <- p_beta + scale_color_manual(values=subcat_pal)
+p_beta_save
+
+p_beta + scale_color_manual(values=subcat_pal)+ geom_text(mapping = aes(label = Name), size = 8, vjust=1.5)
+
+
+```
+
+
+## Subsampling for caves
+
+```{r}
+
+#subset samples that have similar pH
+phy_subset <- subset_samples(phy_all, Sample_type4=="Subglacial")
+sample_names(phy_subset)
+sample_data(phy_subset)[, -4:-9][,-1:-2]
+
+```
+
+```{r,fig.height= 13, fig.width= 20, warning=FALSE}
+#phy_all <- microbiome::transform(phy_all, "clr")
+#
+
+theme_beta <- theme(legend.title = element_text(size=30, hjust = 0), 
+                    legend.text = element_text(size = 25),
+                    axis.title.x = element_text(size = 20), 
+                    axis.title.y = element_text(size = 20),
+                    axis.text.x = element_text(size=15),
+                    axis.text.y = element_text(size=15),
+                    legend.key.size = unit(0.99, "cm"))
+subcat_shapes <- c(18,8,17,15,16)
+
+
+phy_all_t <- microbiome::transform(phy_subset, "clr")  #investigate what this does
+ordu_subs = ordinate(phy_all_t, "PCoA", "unifrac")
+
+p_beta <- plot_ordination(phy_all_t, ordu_subs, color="Sample_type4", shape = "Sample_type3") +
+          geom_point(size=14, alpha=0.7) +
+          guides(shape = guide_legend(order = 1))+ 
+          labs(shape = "Category", colour = "Subcategory")+
+          theme_bw() +
+          theme(legend.title = element_text(size=17, hjust = 0), 
+                legend.text = element_text(size = 15),
+                axis.title.x = element_text(size = 20), 
+                axis.title.y = element_text(size = 20),
+                axis.text.x = element_text(size=13),
+                axis.text.y = element_text(size=13),
+                legend.key.size = unit(0.4, "cm"), 
+                legend.position = c(-0.35,0.175))
+
+
+```
+
+
+```{r, fig.height=7, fig.width=13}
+envdata <- sample_data(phy_all_t)[,10:37][,-4]
+envfac <- c(colnames(envdata))
+envfac
+
+for (env in envfac){
+  print(plot_ordination(phy_all_t, ordu_subs, color=env) +
+                              geom_point(size=14, alpha=0.7) +
+                              guides(shape = guide_legend(order = 1))+ 
+                              theme_bw() + theme_beta + scale_colour_gradient(low = "blue", high = "red") + geom_text(mapping = aes(label = Name), size = 8, vjust=1.5))
+}
+
+
+```
+
+
+
+
+

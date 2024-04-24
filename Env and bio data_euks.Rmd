@@ -1,0 +1,213 @@
+---
+title: "volcs analysis of env on bio"
+author: "Stephen Noell"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE, 
+                      warning = FALSE,
+                      fig.align = "center",
+                      fig.width = 10,
+                      fig.height = 6)
+```
+
+
+```{r Libraries and seed}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation
+library("phyloseq")        # analysis of microbial communities
+library("vegan")           # ecological multivariate analyses
+library("patchwork")       # plots together
+library("pairwiseAdonis")
+library("microbiome") #for analyzing phyloseq objects
+library("viridis") #color package
+library("svglite") #for saving SVGs
+library("ggpubr") #for saving plots
+library("here")            # set the path to the folder 
+library("ggrepel")
+library("microeco")
+library("file2meco")
+library("mice")
+
+set.seed(57)
+```
+
+#################### 18S
+
+```{r Load the data}
+# Load the final phyloseq object, with contaminants removed and CLR abundance adjusted
+erebus18s_fsr <- readRDS("18S analysis/physeq_18s_erebus_silva_nof_fin.clr")
+
+#Load version of physeq object, with contaminants removed but not normalized, for alpha diversity analysis
+erebus18s_fs <- readRDS("18S analysis/physeq_18s_erebus_silva_nof_fin.cont")
+
+#Load version of physeq object, with contaminants removed and relative abundance normalized
+erebus18s_fsa <- readRDS("18S analysis/physeq_18s_erebus_silva_nof_fin.rel")
+
+envdata.18s <-  read.csv("18S analysis/18s_env_data.csv", header = TRUE) %>%
+  column_to_rownames(., var = "Sample.name") %>%
+  na.omit(.)
+
+#remove samples with NA in environmental data
+samples_remove <- c("Helocave2-18s", "Crater1-0-1cm-18s", "Crater2-Mat-18s")
+samples_remove2 <- c("ERB-1A-18s")
+samples_remove3 <- c("Harrys-Dream-Vent-18s")
+
+erebus18s_fsa2 <- subset_samples(erebus18s_fsa, sample_names(erebus18s_fsa) != samples_remove &
+                                    sample_names(erebus18s_fsa) != samples_remove2 &
+                                    sample_names(erebus18s_fsa) != samples_remove3)
+
+#transform phyloseq to microeco object
+erebus18s_meco <- phyloseq2meco(erebus18s_fsa2)
+erebus18s_meco$tax_table <- tidy_taxonomy(erebus18s_meco$tax_table)
+erebus18s_meco$sample_table <- data.frame(envdata.18s)
+
+t1.18s <- trans_env$new(dataset = erebus18s_meco, env_cols = c(5:33))
+
+exposed_col <- "#F9A620"
+subglacial_col <- "#67a9cf"
+exposure_col <- c(exposed_col, subglacial_col)
+
+subcat_pal <- c(exposure_col,"#7fc97f")
+
+```
+
+
+```{r}
+# initial dbRDA with all factors
+t1.18s$cal_ordination(method = "dbRDA", use_measure = "bray")
+t1.18s$trans_ordination(adjust_arrow_length = TRUE, max_perc_env = 1.5)
+t1.18s$plot_ordination(plot_color = "Sample_type", plot_shape = "Exposure", 
+                   shape_values = c(16, 17),  color_values = subcat_pal)
+
+```
+
+
+```{r}
+#Mantel test for correlations betw env parameters and microbial community, determine which factors are significant
+t1.18s$cal_mantel(method = "spearman", use_measure = "bray", p_adjust_method = "BH")
+sig_facs.18s <- t1.18s$res_mantel %>%
+  dplyr::filter(., p.value < 0.05)
+
+sig_facs.18s
+
+sig_facs.18s2 <- sig_facs.18s$Variables
+
+#drop some of the elements with no real biological relevance
+
+t2.18s <- trans_env$new(dataset = erebus18s_meco, env_cols = sig_facs.18s2)
+t2.18s$cal_ordination(method = "dbRDA", use_measure = "bray")
+t2.18s$trans_ordination(adjust_arrow_length = TRUE, max_perc_env = 1.5)
+
+cap_plot_f.18s <- t2.18s$plot_ordination(plot_color = "Sample_type", plot_shape = "Exposure", 
+                   shape_values = c(16, 17),  color_values = subcat_pal) +
+  theme(legend.position = "none")
+
+cap_plot_f.18s
+
+#None significant after adjusting p values. Sr, Na, K, Al, As all sig pre-adjustment. 
+#GWC points to TR strongly
+```
+
+
+######################## ITS
+
+
+```{r Load the data}
+# Load the final phyloseq object, with contaminants removed and CLR abundance adjusted
+erebusitsf.clr <- readRDS("ITS analysis/physeq_its_erebus.clr")
+
+#Load version of physeq object, with contaminants removed but not normalized, for alpha diversity analysis
+erebusitsf <- readRDS("ITS analysis/physeq_its_erebus.cont")
+
+#Load version of physeq object, with contaminants removed and relative abundance normalized
+erebusitsf.rel <- readRDS("ITS analysis/physeq_its_erebus.rel")
+
+envdata.its <-  read.csv("ITS analysis/its_env_data.csv", header = TRUE) %>%
+  column_to_rownames(., var = "Sample.name") %>%
+  na.omit(.)
+
+#remove samples with NA in environmental data
+samples_remove <- c("Helocave2-18s", "Crater1-0-1cm-its", "Crater2-Mat-its")
+samples_remove2 <- c("ERB-1A-its")
+samples_remove3 <- c("Harrys-Dream-Vent-its")
+
+erebusitsf.rel2 <- subset_samples(erebusitsf.rel, sample_names(erebusitsf.rel) != samples_remove &
+                                    sample_names(erebusitsf.rel) != samples_remove2 &
+                                    sample_names(erebusitsf.rel) != samples_remove3)
+
+#transform phyloseq to microeco object
+erebusits_meco <- phyloseq2meco(erebusitsf.rel2)
+erebusits_meco$tax_table <- tidy_taxonomy(erebusits_meco$tax_table)
+erebusits_meco$sample_table <- data.frame(envdata.its)
+
+t1.its <- trans_env$new(dataset = erebusits_meco, env_cols = c(5:33))
+
+```
+
+
+```{r}
+# initial dbRDA with all factors
+t1.its$cal_ordination(method = "dbRDA", use_measure = "bray")
+t1.its$trans_ordination(adjust_arrow_length = TRUE, max_perc_env = 1.5)
+t1.its$plot_ordination(plot_color = "Sample_type", plot_shape = "Exposure", 
+                   shape_values = c(16, 17),  color_values = subcat_pal)
+
+```
+
+
+```{r}
+#Mantel test for correlations betw env parameters and microbial community, determine which factors are significant
+t1.its$cal_mantel(method = "spearman", use_measure = "bray", p_adjust_method = "BH")
+sig_facs.its <- t1.its$res_mantel %>%
+  dplyr::filter(., p.value < 0.05)
+
+sig_facs.its
+
+#drop some of the elements with no real biological relevance
+
+bad <- c("Al", "Tl", "Sr")
+
+sig_facs.its2.0 <- sig_facs.its %>%
+  dplyr::filter(!(Variables %in% bad))
+
+sig_facs.its2 <- sig_facs.its2.0$Variables
+
+sig_facs.its2.0
+
+t2.its <- trans_env$new(dataset = erebusits_meco, env_cols = sig_facs.its2)
+t2.its$cal_ordination(method = "dbRDA", use_measure = "bray")
+t2.its$trans_ordination(adjust_arrow_length = TRUE, max_perc_env = 1.5)
+
+cap_plot_f.its <- t2.its$plot_ordination(plot_color = "Sample_type", plot_shape = "Exposure", 
+                   shape_values = c(16, 17),  color_values = subcat_pal,) +
+  theme(legend.position = "none")
+
+cap_plot_f.its
+
+#pH is strongest, closest to significance factor
+
+```
+
+```{r}
+# Final plot!
+env_bio <- ggarrange(cap_plot_f.its, cap_plot_f.18s,
+                     nrow = 1, ncol = 2,
+                     labels = c("B", "C"))
+
+env_bio
+
+
+#ggsave("env_bio.png", env_bio, width = 200, height = 80, units = "mm", dpi = 300)
+
+#ggsave("env_bio.svg", env_bio, width = 200, height = 80, units = "mm", dpi = 300)
+
+sig_facs.its$Community <- "Fungal"
+sig_facs.18s$Community <- "Non-fungal eukaryote"
+
+sig_facs_both <- rbind(sig_facs.its, sig_facs.18s)
+#write.csv(file = "env_bio_corrs.csv", sig_facs_both)
+```

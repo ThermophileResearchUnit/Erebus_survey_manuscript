@@ -1,0 +1,917 @@
+---
+title: "Biological diversity_erebus18s"
+author: "Stephen Noell"
+date: "01/07/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE, 
+                      warning = FALSE,
+                      fig.align = "center",
+                      fig.width = 10,
+                      fig.height = 6)
+```
+
+
+```{r Libraries and seed}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation
+library("phyloseq")        # analysis of microbial communities
+library("vegan")           # ecological multivariate analyses
+library("microbiome") #for analyzing phyloseq objects
+library("viridis") #color package
+library("svglite") #for saving SVGs
+library("ggpubr") #for saving plots
+library("here")            # set the path to the folder
+library("ggplot2")
+library("ggVennDiagram")
+library(forcats)
+library(pairwiseAdonis)
+library("microeco")
+library("file2meco")
+library("agricolae")
+library("picante")
+library("NST")
+
+set.seed(57)
+```
+
+```{r}
+# Using version of 18S data set with fungi removed!
+
+# Load the final phyloseq object, with contaminants removed and CLR abundance adjusted
+erebus18sf.clr <- readRDS("18S analysis/physeq_18s_erebus_silva_nof_fin.clr")
+
+#Load version of physeq object, with contaminants removed but not normalized, for alpha diversity analysis
+erebus18sf <- readRDS("18S analysis/physeq_18s_erebus_silva_nof_fin.cont")
+
+#Load version of physeq object, with contaminants removed and relative abundance normalized
+erebus18sf.rel <- readRDS("18S analysis/physeq_18s_erebus_silva_nof_fin.rel")
+
+
+exposed_col <- "#F9A620"
+subglacial_col <- "#67a9cf"
+exposure_col <- c(exposed_col, subglacial_col)
+
+subcat_pal <- c("darkorange2","#386cb0","#7fc97f")
+
+```
+
+```{r}
+#export tax and abundance table
+erebus18sf_t <- transform_sample_counts(erebus18sf, function(x) x / sum(x))
+erebus18sf_totu <- t(otu_table(erebus18sf_t))
+
+erebus18sf_totu_f <- cbind(tax_table(erebus18sf_t) ,erebus18sf_totu )
+#write.csv(erebus18sf_totu_f,"tax_abundance_table_18S.csv", row.names=TRUE)
+
+```
+
+
+```{R}
+#Prepare data for PCoA plotting
+unifrac.erebus18sf.clr <- phyloseq::distance(erebus18sf.clr, method = "unifrac")
+erebus18sf.clr.mds <- ordinate(erebus18sf.clr, "PCoA", distance = unifrac.erebus18sf.clr)
+
+# final plot
+pcoa.erebus18sf.clr_18s <- plot_ordination(erebus18sf.clr, erebus18sf.clr.mds, 
+                color="Sample_type", shape = "Exposure") +
+  geom_point(size = 7, alpha = 0.7) +
+  #geom_text(label = rownames(erebus18sf.clr.mds$vectors),
+   #        nudge_x = 0.01, nudge_y = 0.01, 
+    #        check_overlap = F) +
+  scale_color_manual(values=subcat_pal) +
+  theme_bw() +
+  theme(
+    axis.title.x = element_text (size=11),
+    axis.text.x  = element_text(size=9),
+    axis.title.y = element_text(size=11),
+    axis.text.y  = element_text(size=9),
+  #  legend.text = element_text(size=10),
+   # legend.title = element_text(size=10),
+    legend.position = "none")
+
+pcoa.erebus18sf.clr_18s
+
+# Looks like subglacial sites are similar except Harrys dream. WC is separate from other exposed sites. 
+```
+
+```{r}
+#inspect alpha diversity of samples
+alpha_18s1 <- plot_richness(erebus18sf, x="Sample_type", measures=c("Shannon")) + 
+  geom_boxplot(aes(fill=Sample_type), alpha=0.8) +    
+  labs(y="Shannon Index")+
+  facet_grid(~Exposure, scales = "free", space = "free") +
+  
+  theme_bw()+
+  
+  theme(
+    axis.title.x = element_blank (),
+    axis.text.x  = element_blank(),
+    axis.title.y = element_text(size=11),
+    axis.text.y  = element_text(size=9),
+    axis.ticks.x = element_blank(),
+    strip.text = element_text(size=11),
+        panel.background = element_blank(),
+        strip.background = element_blank(),
+        legend.position="none",
+        ) +
+  scale_fill_manual(values = subcat_pal)
+
+
+alpha_18s1$layers <- alpha_18s1$layers[-1]
+
+shannon_plot_18s <- alpha_18s1 + 
+  geom_point(size = 3, position = position_jitter(width = 0.2), color= "#333333") +
+  theme(axis.text.x = element_blank())
+
+shannon_plot_18s
+#No difference between exposed and subglacial
+
+```
+
+```{r}
+
+# Now we will perform a PERMANOVA to see if these groups of sites have different centroids
+# This will be complemented with a Permutation test for homogeneity of multivariate dispersions 
+# -if this doesn't come back significant we can trust that the PERMANOVA results show
+#differences in data centroids and not in data dispersion
+
+# Create a data frame with the environmental data 
+envdata <-  read.csv("18S analysis/18s_env_data.csv", header = TRUE)
+envdata$Sample_type <- factor(envdata$Sample_type)
+unifrac.erebus18sf.clr.mat <- as.matrix(unifrac.erebus18sf.clr)
+
+# PERMANOVA on site
+adonis2(unifrac.erebus18sf.clr ~ Sample_type, data = envdata)
+
+#test for homogeneity of dispersal
+disp.site<- betadisper(unifrac.erebus18sf.clr, envdata$Sample_type)
+permutest(disp.site)
+
+# PERMANOVA is significant, dispersal is not!
+# Is the difference significant between all sample types? - check with pairwise PERMANOVA
+
+pairwise.adonis2(unifrac.erebus18sf.clr.mat ~ Sample_type, data = envdata)
+#subglacial vs exposed significant
+#tranway vs exposed significant
+#subglacial vs tramway not significant
+
+```
+
+```{r}
+### try subglacial vs exposed
+
+envdata$Exposure <- factor(envdata$Exposure)
+unifrac.erebus18sf.clr.mat <- as.matrix(unifrac.erebus18sf.clr)
+
+# PERMANOVA on site
+adonis2(unifrac.erebus18sf.clr ~ Exposure, data = envdata)
+
+#test for homogeneity of dispersion
+disp.site<- betadisper(unifrac.erebus18sf.clr, envdata$Exposure)
+permutest(disp.site)
+
+# Looks like the significant difference between the two is legit - dispersion returns non-significant result
+# Is the difference significant between all sample types? - check with pairwise PERMANOVA
+
+pairwise.adonis2(unifrac.erebus18sf.clr.mat ~ Exposure, data = envdata)
+
+
+```
+
+
+
+```{r}
+#Indicator species
+otu_table1 <- as.data.frame(otu_table(erebus18sf))
+tax_table1 <- as.data.frame(tax_table(erebus18sf))
+
+groups <- data.frame(sample_data(erebus18sf)) %>%
+  dplyr::select(Sample_type)
+
+# Replace "Subglacial" with 1
+groups$Sample_type[groups$Sample_type == "Subglacial"] <- 1
+
+# Replace "Exp Hot Soil" with 2
+groups$Sample_type[groups$Sample_type == "Exp Hot Soil"] <- 2
+
+# Replace "Tramway Ridge" with 3
+groups$Sample_type[groups$Sample_type == "Tramway Ridge"] <- 3
+
+groupsv <- groups$Sample_type
+
+
+ind_val <- multipatt(otu_table1, groupsv,
+                     control = how(nperm=999))
+
+summary(ind_val)
+
+#####ASV level exploration, using 0.85 as a cutoff for stat
+indic_asv <- read.csv("indic_spec_18s.csv")
+
+tax_table1.1 <- tax_table1 %>%
+  rownames_to_column(var = "OTU")
+
+indic_asv2 <- dplyr::left_join(indic_asv, tax_table1.1, by = "OTU")
+
+#write.csv(indic_asv2, "indicator_asv_18s_final.csv")
+```
+
+
+
+```{r}
+# Make community composition plot to see what's different between the sites
+#new colors
+#pal_barn <- RColorBrewer::brewer.pal(5, "Paired")
+pal_barn2 <- rev(RColorBrewer::brewer.pal(5, "BrBG"))
+
+pal_barnf2 <- c("black", pal_barn2, "#636363")
+
+## Phylum abundance plot
+
+# Data for plotting
+erebus18s_p <- erebus18sf.rel %>% psmelt()
+
+erebus18s_p["Phylum"][which(erebus18s_p$Abundance < 0.01), ] <- "Phyla < 1 %"
+erebus18s_p$Phylum[is.na(erebus18s_p$Phylum)] = "Unassigned"
+
+#Reorder phyla so <1% is first, then alphabetical
+list <- erebus18s_p$Phylum %>%
+  unique(.) %>%
+  as.data.frame(.) %>%
+  filter(., . != "Unassigned") %>%
+  filter(., . != "Phyla < 1 %") %>%
+  unlist(., use.names=FALSE) %>%
+  sort(.)
+
+x <- c("Phyla < 1 %", list, "Unassigned")
+
+erebus18s_p$Phylum <- factor(as.character(erebus18s_p$Phylum), levels=x)
+erebus18s_p <- erebus18s_p[order(erebus18s_p$Phylum),]
+
+erebus18s_p$Sample_type <- factor(erebus18s_p$Sample_type, 
+                                  levels = c("Subglacial", "Exp Hot Soil", "Tramway Ridge"))
+  
+# Plot 
+plot_phylum_18s <- ggplot(erebus18s_p, aes(x = Sample, y = Abundance, fill = Phylum)) +
+  geom_bar(stat = "identity") +
+  facet_grid(~ Sample_type, scales = "free", space = "free") +
+  scale_fill_manual(values = pal_barnf2) +
+  labs(x = "Sample", y = "Abundance") +
+  theme(panel.margin=unit(.05, "lines"),
+        panel.border = element_rect(color = "black", fill = NA, size = 1.2), 
+        strip.background = element_rect(color = "black", size = 1,
+                                        fill = "white"),
+    strip.text.x = element_text(size = 9),
+    legend.title = element_blank(),
+    legend.text = element_text(size=9),
+    axis.text.x  = element_text(size=9),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    legend.position = "bottom",
+        legend.key.width = unit(0.3, "cm"),
+    legend.key.height=unit(0.3,"cm")) +
+  guides(fill=guide_legend(nrow=3)) +
+  coord_cartesian(expand = FALSE) +
+    scale_x_discrete(guide = guide_axis(angle = 90))
+
+plot_phylum_18s
+
+```
+
+```{r}
+
+## Class abundance plot
+
+pal_barn_18sc <- c("black", RColorBrewer::brewer.pal(8, "PiYG"), "#636363")
+
+# Data for plotting
+erebus_c_18s <- erebus18sf.rel %>% psmelt()
+
+erebus_c_18s["Class"][which(erebus_c_18s$Abundance < 0.02), ] <- "Class < 2 %"
+erebus_c_18s$Class[is.na(erebus_c_18s$Class)] = "Unassigned"
+
+#Reorder class so <1% is first, then alphabetical
+list <- erebus_c_18s$Class %>%
+  unique(.) %>%
+  as.data.frame(.) %>%
+  filter(., . != "Unassigned") %>%
+  filter(., . != "Class < 2 %") %>%
+  unlist(., use.names=FALSE) %>%
+  sort(.)
+
+x <- c("Class < 2 %", list, "Unassigned")
+
+erebus_c_18s$Class <- factor(as.character(erebus_c_18s$Class), levels=x)
+erebus_c_18s <- erebus_c_18s[order(erebus_c_18s$Class),]
+
+erebus_c_18s$Sample_type <- factor(erebus_c_18s$Sample_type, 
+                                  levels = c("Subglacial", "Exp Hot Soil", "Tramway Ridge"))
+
+# Plot 
+plot_Class_18s <- ggplot(erebus_c_18s, aes(x = Sample, y = Abundance, fill = Class)) +
+  geom_bar(stat = "identity") +
+  facet_grid(~ Sample_type, scales = "free", space = "free") +
+  scale_fill_manual(values = pal_barn_18sc) +
+  labs(x = "Sample", y = "Abundance") +
+    theme(panel.margin=unit(.05, "lines"),
+        panel.border = element_rect(color = "black", fill = NA, size = 1.2), 
+        strip.background = element_rect(color = "black", size = 1,
+                                        fill = "white"),
+    strip.text.x = element_text(size = 9),
+    legend.title = element_blank(),
+    legend.text = element_text(size=9),
+    axis.text.x  = element_text(size=9),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    legend.position = "bottom",
+        legend.key.width = unit(0.3, "cm"),
+    legend.key.height=unit(0.3,"cm")) +
+  guides(fill=guide_legend(nrow=4)) +
+  coord_cartesian(expand = FALSE) +
+    scale_x_discrete(guide = guide_axis(angle = 90))
+
+plot_Class_18s
+
+```
+
+
+
+```{r}
+# Use random forest to identify which taxa are important for distinguishing these sites
+
+#want to include ASV as a taxonomic rank?
+tax_table <- data.frame(tax_table(erebus18sf)) %>%
+  rownames_to_column(., var = "ASV_original") %>%
+  dplyr::mutate(., ASV = ASV_original) %>%
+  column_to_rownames(., var = "ASV_original")
+
+#transform phyloseq to microeco object
+erebus18sf_meco <- phyloseq2meco(erebus18sf)
+#erebus18sf_meco$tax_table <- tax_table
+erebus18sf_meco$tax_table <- tidy_taxonomy(erebus18sf_meco$tax_table)
+
+############## Run actual RF analysis
+
+t1 <- trans_diff$new(dataset = erebus18sf_meco, method = "rf", group = "Exposure", taxa_level = "all") 
+
+#Set taxa level to whatever you want; in my data set, none of the ASVs were significant at the ASV level.
+
+# plot the abundance using same taxa in g1
+g2 <- t1$plot_diff_abund(group_order = c("Exposed", "Subglacial"), select_taxa = t1$plot_diff_bar_taxa,
+                         color_values = exposure_col, coord_flip = FALSE)
+
+ab_plot <- g2 + 
+  theme(legend.position = "right",
+                 axis.title.x = element_blank(),
+                 axis.text.y = element_text(size=10))
+
+ab_plot
+
+#Neobodo only significant one
+#ggsave("18s_rf.png", plot = ab_plot, dpi = 300, width = 100, height = 90, units = "mm")
+#ggsave("18s_rf.svg", plot = ab_plot, dpi = 300, width = 100, height = 90, units = "mm")
+```
+
+
+###############################
+ITS
+################################
+
+```{r}
+# Load the final phyloseq object, with contaminants removed and CLR abundance adjusted
+erebusitsf.clr <- readRDS("ITS analysis/physeq_its_erebus.clr")
+
+#Load version of physeq object, with contaminants removed but not normalized, for alpha diversity analysis
+erebusitsf <- readRDS("ITS analysis/physeq_its_erebus.cont")
+
+#Load version of physeq object, with contaminants removed and relative abundance normalized
+erebusitsf.rel <- readRDS("ITS analysis/physeq_its_erebus.rel")
+
+```
+
+
+```{r}
+#export tax and abundance table
+erebusitsf_t <- transform_sample_counts(erebusitsf, function(x) x / sum(x))
+erebusitsf_totu <- t(otu_table(erebusitsf_t))
+
+erebusitsf_totu_f <- cbind(tax_table(erebusitsf_t) ,erebusitsf_totu )
+#write.csv(erebusitsf_totu_f,"tax_abundance_table_its.csv", row.names=TRUE)
+
+```
+
+
+```{R}
+#Prepare data for PCoA plotting
+unifrac.erebusitsf.clr <- phyloseq::distance(erebusitsf.clr, method = "unifrac")
+erebusitsf.clr.mds <- ordinate(erebusitsf.clr, "PCoA", distance = unifrac.erebusitsf.clr)
+
+# final plot
+pcoa.erebusitsf.clr_its <- plot_ordination(erebusitsf.clr, erebusitsf.clr.mds, 
+                color="Sample_type", shape = "Exposure") +
+  geom_point(size = 7, alpha = 0.7) +
+  #geom_text(label = rownames(erebusitsf.clr.mds$vectors),
+   #        nudge_x = 0.01, nudge_y = 0.01, 
+    #        check_overlap = F) +
+  scale_color_manual(values=subcat_pal) +
+  theme_bw() +
+  theme(
+    axis.title.x = element_text (size=11),
+    axis.text.x  = element_text(size=9),
+    axis.title.y = element_text(size=11),
+    axis.text.y  = element_text(size=9),
+    #legend.text = element_text(size=10),
+    #legend.title = element_text(size=10),
+    legend.position = "none")
+
+pcoa.erebusitsf.clr_its
+
+# Looks like subglacial sites are generally similar to each other except for harrys dream; WC and TR are far apart. Craters are scattered 
+```
+
+```{r}
+#inspect alpha diversity of samples
+alpha_its1 <- plot_richness(erebusitsf, x="Sample_type", measures=c("Shannon")) + 
+  geom_boxplot(aes(fill=Sample_type), alpha=0.8) +    
+  labs(y="Shannon Index")+
+  facet_grid(~Exposure, scales = "free", space = "free") +
+  
+  theme_bw()+
+  
+  theme(
+    axis.title.x = element_blank (),
+    axis.text.x  = element_blank(),
+    axis.title.y = element_text(size=11),
+    axis.text.y  = element_text(size=9),
+    axis.ticks.x = element_blank(),
+    strip.text = element_text(size=11),
+        panel.background = element_blank(),
+        strip.background = element_blank(),
+        legend.position="none",
+        ) +
+  scale_fill_manual(values = subcat_pal)
+
+
+alpha_its1$layers <- alpha_its1$layers[-1]
+
+shannon_plot_its <- alpha_its1 + 
+  geom_point(size = 3, position = position_jitter(width = 0.2), color= "#333333") +
+  theme(axis.text.x = element_blank())
+shannon_plot_its
+#No difference between exposed and subglacial
+
+```
+
+```{r}
+
+# Now we will perform a PERMANOVA to see if these groups of sites have different centroids
+# This will be complemented with a Permutation test for homogeneity of multivariate dispersions 
+# -if this doesn't come back significant we can trust that the PERMANOVA results show
+#differences in data centroids and not in data dispersion
+
+# Create a data frame with the environmental data 
+envdata_its <-  read.csv("ITS analysis/its_env_data.csv", header = TRUE)
+envdata_its$Sample_type <- factor(envdata_its$Sample_type)
+unifrac.erebusitsf.clr.mat <- as.matrix(unifrac.erebusitsf.clr)
+
+# PERMANOVA on site
+adonis2(unifrac.erebusitsf.clr ~ Sample_type, data = envdata_its)
+
+#test for homogeneity of dispersal
+disp.site<- betadisper(unifrac.erebusitsf.clr, envdata_its$Sample_type)
+permutest(disp.site)
+
+# PERMANOVA significant, dispersal not
+
+pairwise.adonis2(unifrac.erebusitsf.clr.mat ~ Sample_type, data = envdata_its)
+#subglacial diff from exp hot soil, exp hot soil diff from TR
+
+```
+
+```{r}
+### try subglacial vs exposed
+
+envdata_its$Exposure <- factor(envdata_its$Exposure)
+unifrac.erebusitsf.clr.mat <- as.matrix(unifrac.erebusitsf.clr)
+
+# PERMANOVA on site
+adonis2(unifrac.erebusitsf.clr ~ Exposure, data = envdata_its)
+
+#test for homogeneity of dispersion
+disp.site<- betadisper(unifrac.erebusitsf.clr, envdata_its$Exposure)
+permutest(disp.site)
+
+# nothing significant
+
+pairwise.adonis2(unifrac.erebusitsf.clr.mat ~ Exposure, data = envdata_its)
+
+
+```
+
+```{r}
+#Indicator species
+otu_table1 <- as.data.frame(otu_table(erebusitsf))
+tax_table1 <- as.data.frame(tax_table(erebusitsf))
+
+groups <- data.frame(sample_data(erebusitsf)) %>%
+  dplyr::select(Sample_type)
+
+# Replace "Subglacial" with 1
+groups$Sample_type[groups$Sample_type == "Subglacial"] <- 1
+
+# Replace "Exp Hot Soil" with 2
+groups$Sample_type[groups$Sample_type == "Exp Hot Soil"] <- 2
+
+# Replace "Tramway Ridge" with 3
+groups$Sample_type[groups$Sample_type == "Tramway Ridge"] <- 3
+
+groupsv <- groups$Sample_type
+
+
+ind_val <- multipatt(otu_table1, groupsv,
+                     control = how(nperm=999))
+
+summary(ind_val)
+
+#####ASV level exploration, using 0.85 as a cutoff for stat
+indic_asv <- read.csv("indic_spec_its.csv")
+
+tax_table1.1 <- tax_table1 %>%
+  rownames_to_column(var = "OTU")
+
+indic_asv2 <- dplyr::left_join(indic_asv, tax_table1.1, by = "OTU")
+
+#write.csv(indic_asv2, "indicator_asv_its_final.csv")
+```
+
+
+
+
+```{r}
+# Make community composition plot to see what's different between the sites
+#new colors
+pal_barn <- RColorBrewer::brewer.pal(10, "Paired")
+
+#pal_barn2 <- RColorBrewer::brewer.pal(11, "BrBG")
+
+pal_barnf <- c("black", pal_barn[5:8], pal_barn[10], "#636363")
+
+## Phylum abundance plot
+
+# Data for plotting
+erebusits_p <- erebusitsf.rel %>% psmelt()
+
+erebusits_p["Phylum"][which(erebusits_p$Abundance < 0.01), ] <- "Phyla < 1 %"
+erebusits_p$Phylum[is.na(erebusits_p$Phylum)] = "Unassigned"
+
+#Reorder phyla so <1% is first, then alphabetical
+list <- erebusits_p$Phylum %>%
+  unique(.) %>%
+  as.data.frame(.) %>%
+  filter(., . != "Unassigned") %>%
+  filter(., . != "Phyla < 1 %") %>%
+  unlist(., use.names=FALSE) %>%
+  sort(.)
+
+x <- c("Phyla < 1 %", list, "Unassigned")
+
+erebusits_p$Phylum <- factor(as.character(erebusits_p$Phylum), levels=x)
+erebusits_p <- erebusits_p[order(erebusits_p$Phylum),]
+
+erebusits_p$Sample_type <- factor(erebusits_p$Sample_type, 
+                                  levels = c("Subglacial", "Exp Hot Soil", "Tramway Ridge"))
+  
+# Plot 
+plot_phylum_its <- ggplot(erebusits_p, aes(x = Sample, y = Abundance, fill = Phylum)) +
+  geom_bar(stat = "identity") +
+  facet_grid(~ Sample_type, scales = "free", space = "free") +
+  scale_fill_manual(values = pal_barnf) +
+  labs(x = "Sample", y = "Abundance") +
+  theme(panel.margin=unit(.05, "lines"),
+        panel.border = element_rect(color = "black", fill = NA, size = 1.2), 
+        strip.background = element_rect(color = "black", size = 1,
+                                        fill = "white"),
+    strip.text.x = element_text(size = 9),
+    legend.title = element_blank(),
+    legend.text = element_text(size=9),
+    axis.text.x  = element_text(size=9),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    legend.position = "bottom",
+        legend.key.width = unit(0.3, "cm"),
+    legend.key.height=unit(0.3,"cm")) +
+  guides(fill=guide_legend(nrow=3)) +
+  coord_cartesian(expand = FALSE) +
+    scale_x_discrete(guide = guide_axis(angle = 90))
+
+plot_phylum_its
+
+```
+
+```{r}
+
+## Class abundance plot
+
+pal_barn_itsc <- c("black", RColorBrewer::brewer.pal(10, "PuOr"),
+                   "#addd8e", "#78c679", "#238443", "#004529",
+                   #RColorBrewer::brewer.pal(5, "Greys"),
+                   #RColorBrewer::brewer.pal(5, "Purples"), 
+                   "#636363")
+
+# Data for plotting
+erebus_c_its <- erebusitsf.rel %>% psmelt()
+
+erebus_c_its["Class"][which(erebus_c_its$Abundance < 0.02), ] <- "Class < 2 %"
+erebus_c_its$Class[is.na(erebus_c_its$Class)] = "Unassigned"
+
+#Reorder class so <1% is first, then alphabetical
+list <- erebus_c_its$Class %>%
+  unique(.) %>%
+  as.data.frame(.) %>%
+  filter(., . != "Unassigned") %>%
+  filter(., . != "Class < 2 %") %>%
+  unlist(., use.names=FALSE) %>%
+  sort(.)
+
+x <- c("Class < 2 %", list, "Unassigned")
+
+erebus_c_its$Class <- factor(as.character(erebus_c_its$Class), levels=x)
+erebus_c_its <- erebus_c_its[order(erebus_c_its$Class),]
+
+erebus_c_its$Sample_type <- factor(erebus_c_its$Sample_type, 
+                                  levels = c("Subglacial", "Exp Hot Soil", "Tramway Ridge"))
+
+# Plot 
+plot_Class_its <- ggplot(erebus_c_its, aes(x = Sample, y = Abundance, fill = Class)) +
+  geom_bar(stat = "identity") +
+  facet_grid(~ Sample_type, scales = "free", space = "free") +
+  scale_fill_manual(values = pal_barn_itsc) +
+  labs(x = "Sample", y = "Abundance") +
+    theme(panel.margin=unit(.05, "lines"),
+        panel.border = element_rect(color = "black", fill = NA, size = 1.2), 
+        strip.background = element_rect(color = "black", size = 1,
+                                        fill = "white"),
+        panel.background = element_blank(),
+    strip.text.x = element_text(size = 9),
+    legend.title = element_blank(),
+    legend.text = element_text(size=9),
+    axis.text.x  = element_text(size=9),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    legend.position = "bottom",
+    legend.key.width = unit(0.3, "cm"),
+    legend.key.height=unit(0.3,"cm"),) +
+  guides(fill=guide_legend(nrow=6)) +
+  coord_cartesian(expand = FALSE) +
+    scale_x_discrete(guide = guide_axis(angle = 90))
+
+plot_Class_its
+
+```
+
+
+
+```{r}
+# Use random forest to identify which taxa are important for distinguishing these sites
+
+#want to include ASV as a taxonomic rank?
+tax_table <- data.frame(tax_table(erebusitsf)) %>%
+  rownames_to_column(., var = "ASV_original") %>%
+  dplyr::mutate(., ASV = ASV_original) %>%
+  column_to_rownames(., var = "ASV_original")
+
+#transform phyloseq to microeco object
+erebusitsf_meco <- phyloseq2meco(erebusitsf)
+#erebusitsf_meco$tax_table <- tax_table
+erebusitsf_meco$tax_table <- tidy_taxonomy(erebusitsf_meco$tax_table)
+
+############## Run actual RF analysis
+
+#t1 <- trans_diff$new(dataset = erebusitsf_meco, method = "rf", group = "Exposure", taxa_level = "all") 
+
+########None significant!
+```
+
+
+
+```{r alpha beta plots}
+#final plots
+ab_its <- ggarrange(shannon_plot_its,
+                    pcoa.erebusitsf.clr_its,
+                    ncol= 2,
+                    nrow = 1,
+                    widths = c(0.5, 1),
+                    labels = c("C", "D"))
+
+ab_its
+
+
+ab_18s <- ggarrange(shannon_plot_18s,
+                    pcoa.erebus18sf.clr_18s,
+                    ncol= 2,
+                    nrow = 1,
+                    widths = c(0.5, 1),
+                    labels = c("E", "F"))
+
+ab_18s
+
+ab_both <- ggarrange(ab_its, ab_18s,
+                     nrow = 2,
+                     ncol = 1,
+                     labels = c(""))
+
+ab_both
+
+ggsave("alpha_beta_euks.png", plot = ab_both, dpi = 300, width = 200, height = 110, units = "mm")
+ggsave("alpha_beta_euks.svg", plot = ab_both, dpi = 300, width = 200, height = 110, units = "mm")
+
+```
+
+
+```{r barplots}
+bps_p <- ggarrange(plot_phylum_its,
+                      plot_phylum_18s,
+                      ncol = 2, nrow = 1, labels = c("C", "D"))
+
+bps_p
+
+#ggsave("barplots_phylum_euks.png", plot = bps_p, dpi = 300, width = 200, height = 110, units = "mm")
+#ggsave("barplots_phylum_euks.svg", plot = bps_p, dpi = 300, width = 200, height = 110, units = "mm")
+
+bps_c <- ggarrange(plot_Class_its,
+                      plot_Class_18s,
+                      ncol = 2, nrow = 1, labels = c("B", "C"))
+
+bps_c
+
+ggsave("barplots_class_euks.png", plot = bps_c, dpi = 300, width = 200, height = 130, units = "mm")
+ggsave("barplots_class_euks.svg", plot = bps_c, dpi = 300, width = 200, height = 130, units = "mm")
+```
+
+
+
+```{r}
+# What percentage of reads can't be assigned to a phylum? 18S
+volcs_na <- erebus18sf %>%
+  psmelt() %>%
+  filter(., is.na(Phylum))
+
+volcs_all <- erebus18sf %>%
+  psmelt()
+
+na_abund <- sum(volcs_na$Abundance)
+all_abund <- sum(volcs_all$Abundance)
+
+na_abund / all_abund
+
+volcs_na_cl <- erebus18sf %>%
+  psmelt() %>%
+  filter(., is.na(Class))
+
+na_abund_cl <- sum(volcs_na_cl$Abundance)
+all_abund <- sum(volcs_all$Abundance)
+
+na_abund_cl / all_abund
+
+volcs_na_or <- erebus18sf %>%
+  psmelt() %>%
+  filter(., is.na(Order))
+
+na_abund_or <- sum(volcs_na_or$Abundance)
+all_abund <- sum(volcs_all$Abundance)
+
+na_abund_or / all_abund
+
+volcs_na_fam <- erebus18sf %>%
+  psmelt() %>%
+  filter(., is.na(Family))
+
+na_abund_fam <- sum(volcs_na_fam$Abundance)
+all_abund <- sum(volcs_all$Abundance)
+
+na_abund_fam / all_abund
+
+volcs_na_gen <- erebus18sf %>%
+  psmelt() %>%
+  filter(., is.na(Genus))
+
+na_abund_gen <- sum(volcs_na_gen$Abundance)
+all_abund <- sum(volcs_all$Abundance)
+
+na_abund_gen / all_abund
+
+volcs_na_spec <- erebus18sf %>%
+  psmelt() %>%
+  filter(., is.na(Species))
+
+na_abund_spec <- sum(volcs_na_spec$Abundance)
+all_abund <- sum(volcs_all$Abundance)
+
+na_abund_spec / all_abund
+
+```
+
+
+
+```{r heatmap}
+#Look at the abundance profile of whatever ASVs you want to
+erebus18sf.rel_mel <- erebus18sf.rel %>%
+  psmelt()
+
+erebus18sf.rel_mel$Phylum[is.na(erebus18sf.rel_mel$Phylum)] = "Unassigned"
+
+erebus18sf.rel_filt <- erebus18sf.rel_mel %>%
+  filter(., Order == "Chlorophyta")
+
+erebus18sf.rel_filt <- erebus18sf.rel_filt %>%
+  mutate(Abundance2 = log10(Abundance)) %>%
+  select(-Abundance) %>%
+  dplyr::rename(Abundance = Abundance2)
+
+erebus18sf.rel_filt$Sample <- as.factor(erebus18sf.rel_filt$Sample)
+
+erebus18sf.rel_filt$ASV_Phylum = paste(
+  #erebus18sf.rel_filt$Phylum, 
+                                       #erebus18sf.rel_filt$Class,
+                                   erebus18sf.rel_filt$Order, 
+                                   erebus18sf.rel_filt$Family,
+                                   erebus18sf.rel_filt$Genus, 
+                                   erebus18sf.rel_filt$OTU)
+
+heatmap_asv <- ggplot(erebus18sf.rel_filt, aes(Sample, ASV_Phylum)) +
+  geom_tile(aes(fill = Abundance)) +
+  theme_bw() +
+  scale_fill_distiller('log10\nabundance', palette = "YlOrRd", direction = 1) +
+  ylab("ASV #") +
+  xlab("Sample") +
+  theme(
+    axis.title.x = element_text (size=12),
+    axis.text.x  = element_text(size=12),
+    axis.title.y = element_text(size=12),
+    axis.text.y  = element_text(size=10),
+    strip.text.x = element_text(size = 12),
+    legend.text = element_text(size=12),
+    legend.title = element_text(size=12)) +
+    scale_x_discrete(guide = guide_axis(angle = 90))
+
+heatmap_asv
+
+#ggsave("heatmap.png", plot = heatmap_asv, dpi = 300, width = 150, height = 150, un18s = "mm")
+
+#write.csv(erebus18sf.rel_filt[c(1, 2, 3, 5, 37:43)], "heatmap.csv")
+
+```
+
+```{r}
+#Look at the abundance profile of whatever ASVs you want to
+erebusitsf.rel_mel <- erebusitsf.rel %>%
+  psmelt()
+
+erebusitsf.rel_mel$Phylum[is.na(erebusitsf.rel_mel$Phylum)] = "Unassigned"
+
+erebusitsf.rel_filt <- erebusitsf.rel_mel %>%
+  filter(., Class == "Eurotiomycetes")
+
+erebusitsf.rel_filt <- erebusitsf.rel_filt# %>%
+  #mutate(Abundance2 = log10(Abundance)) %>%
+  #select(-Abundance) %>%
+  #dplyr::rename(Abundance = Abundance2)
+
+erebusitsf.rel_filt$Sample <- as.factor(erebusitsf.rel_filt$Sample)
+
+erebusitsf.rel_filt$ASV_Phylum = paste(
+  #erebusitsf.rel_filt$Phylum, 
+                                       #erebusitsf.rel_filt$Class,
+                                   erebusitsf.rel_filt$Clade, 
+                                   erebusitsf.rel_filt$OTU)
+
+heatmap_asv <- ggplot(erebusitsf.rel_filt, aes(Sample, ASV_Phylum)) +
+  geom_tile(aes(fill = Abundance)) +
+  theme_bw() +
+  scale_fill_distiller('log10\nabundance', palette = "YlOrRd", direction = 1) +
+  ylab("ASV #") +
+  xlab("Sample") +
+  theme(
+    axis.title.x = element_text (size=12),
+    axis.text.x  = element_text(size=12),
+    axis.title.y = element_text(size=12),
+    axis.text.y  = element_text(size=10),
+    strip.text.x = element_text(size = 12),
+    legend.text = element_text(size=12),
+    legend.title = element_text(size=12)) +
+    scale_x_discrete(guide = guide_axis(angle = 90))
+
+heatmap_asv
+erebusitsf.rel
+
+
+```

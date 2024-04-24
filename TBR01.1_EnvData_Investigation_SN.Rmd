@@ -1,0 +1,634 @@
+---
+title: "TBR01.1_EnvData_Investigation"
+author: "Trine"
+date: "2024-04-13"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE, 
+                      warning=FALSE,
+                      fig.align = "left",
+                      fig.width = 10,
+                      fig.height = 6)
+```
+
+
+```{r Libraries and seed}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation   
+library("corrplot")        # graphical display of a correlation matrix
+library("GGally")          # ggplot2 extension for plots - inspect several plots together
+library("vegan")           # multivariate analysis
+library("patchwork")       # arrange plots
+library ("cowplot")        # set a theme
+library("here")            # set the path to the folder 
+library("viridis")          # for color palettes
+library("ggpubr")         # for arranging plots
+
+set.seed(57)
+```
+
+
+```{r functions}
+
+# A function that selects only the samples (rows) containing the specified environmental data. 
+# This function makes it easier to deal with a dataset with a lot of lacking data for some samples.
+envdata_available <- function(envdata, env_vector){
+
+  
+  # choose envfactors of interest
+  envdata <- envdata[ , which(names(envdata) %in% env_vector)]
+  # remove samples where env factors of interest are absent
+  envdata <- envdata[complete.cases(envdata), ]
+  #return cleaned datatabel to analyse
+  return(envdata)
+  
+
+}
+
+# A function that automatically generates a ttest with the samples that have data available for the specified environmental factors. \
+# Returns a table with an overview of env factors tested, p-values, and the number of samples included in the ttest
+ttest_function <- function(envdata, env_vector){
+  # how to use:
+  # envdata  = data.frame with environmental information
+  # select_factors_ttest <- c("pH", "Temperature", "Conductivity", "Carbon", "Nitrogen", "CN")
+  # p_val_df_Sample_type4 <- ttest_function(envdata = envdata, env_vector = select_factors_ttest)
+  
+    p_vals <- c()
+    sig <- c()
+    n_samples_included <- c()
+    
+
+  for (factor in select_factors_ttest){
+    set.seed(57)
+    select_factors <- c("Sample_type3", factor)
+    test <- envdata_available(envdata=envdata, env_vector=select_factors)
+    #test
+    ttest_p <- t.test(test[, which(names(test) %in% c(factor))]~Sample_type3, data = test)$p.value
+    p_vals <- c(p_vals, ttest_p)
+    if (ttest_p < 0.05){
+      sig <- c(sig, "significant")
+    } else {
+      sig <- c(sig, "not significant")
+    }
+    n_samples_included <- c(n_samples_included, nrow(test))
+  }
+  return(data.frame(select_factors_ttest, p_vals, sig, n_samples_included))
+  
+
+}
+
+
+# Same function as before but removes outliers. 
+# Returns a table with an overview of env factors tested, p-values, and the number of samples included in the ttest
+ttest_function_no_outlier <- function(envdata, env_vector){
+  # how to use:
+  # envdata  = data.frame with environmental information
+  # select_factors_ttest <- c("pH", "Temperature", "Conductivity", "Carbon", "Nitrogen", "CN")
+  # p_val_df_Sample_type4 <- ttest_function(envdata = envdata, env_vector = select_factors_ttest)
+  
+  p_vals <- c()
+  sig <- c()
+  n_samples_included <- c()
+  n_outliers <- c()
+  
+  for (factor in select_factors_ttest){
+    set.seed(57)
+    
+    # which column no matches wanted - ie Temp = col 9
+    select_factors <- c("Sample_type3", factor)
+    # Get samples with the specified data available only
+    test <- envdata_available(envdata=envdata, env_vector=select_factors)
+    
+  
+    #Find outliers
+    x <- test[, which(names(test) %in% c(factor))]
+    Tmin = summary(x)[[2]]-(1.5*IQR(x))
+    Tmax = summary(x)[[5]]+(1.5*IQR(x)) 
+    outliers <- c(x[which(x < Tmin | x > Tmax)])
+    
+    test_sub <- data.frame(matrix(ncol=2,nrow=0))
+    names(test_sub) <- names(test)
+  
+    #remove outliers before ttest
+    for(i in 1:length(test[,1])){
+      if (test[,2][i] < Tmin | test[,2][i] > Tmax){
+        #print("Outlier")
+        #print(test[,2][i])
+      } else {
+        j <- length(test_sub[,1]) + 1
+        test_sub[j,] <- test[i,]
+      }
+    }
+  
+    #test
+    ttest_p <- t.test(test_sub[, which(names(test_sub) %in% c(factor))]~Sample_type3, data = test_sub)$p.value
+    p_vals <- c(p_vals, ttest_p)
+    if (ttest_p < 0.05){
+      sig <- c(sig, "significant")
+    } else {
+      sig <- c(sig, "not significant")
+    }
+    n_samples_included <- c(n_samples_included, nrow(test_sub))
+    n_outliers <- c(n_outliers,  length(outliers)  )
+    
+  }
+  
+  return(data.frame(select_factors_ttest, p_vals, sig, n_samples_included, n_outliers))
+}
+
+
+
+# Make a themes for all the plots that look the same. 
+# Use as normal themes: p + theme_boxplot()
+theme_boxplot <- function(base_size=10, base_family="Courier"){
+    #library(grid)
+    library(ggthemes)
+    (theme_bw(base_size=base_size, base_family=base_family)+
+        theme(
+        axis.title.x = element_blank (),
+        axis.text.x  = element_blank(),
+        axis.title.y = element_text(size=11),
+        axis.text.y  = element_text(size=10),
+        axis.ticks.x.bottom = element_blank(),
+        strip.text = element_text(size=13),
+        strip.background = element_blank(),
+        #legend.position="none"
+        ))
+}
+
+```
+
+
+The goal of this analysis is to show that in terms of environmental data the sampling sites are different from each other - this enables the hypothesis that the microbial communities dwelling at these sites will be different as well
+
+##### Overview of the data
+
+
+##### Overview of the data
+```{r load data, fig.height=13, fig.width=26}
+
+#load data
+envdata_all  <-  read.csv("phyloseq_files/DataEnv6.csv", header = TRUE, row.names = 3)
+
+Na_upper_limit = 10000   
+K_upper_limit = 10000
+Al_upper_limit = 5000
+
+envdata_all$Na <- as.numeric(replace(envdata_all$Na, envdata_all$Na == "HIGH", Na_upper_limit))
+envdata_all$K <- as.numeric(replace(envdata_all$K, envdata_all$K == "HIGH", K_upper_limit))
+envdata_all$Al <- as.numeric(replace(envdata_all$Al, envdata_all$Al == "HIGH", Al_upper_limit))
+envdata_all
+
+# Abiotic factors
+
+# Create abiotic factors data table
+envdata_all <- envdata_all %>% mutate(CN = Carbon / Nitrogen)
+select_factors <- c("Name","Sample_type4","Sample_type4","Temperature","pH","Conductivity","Carbon","Nitrogen", "CN", "GWC")
+abiotic <- envdata_available(envdata = envdata_all, env_vector = select_factors)
+
+# Inspect the data for correlations between factors - using GGally
+
+
+select_factors <- c("Sample_type4","Sample_type4","pH","Temperature","Conductivity","Carbon", "Nitrogen", "GWC",colnames(envdata_all[,15:39]))
+icp_el <- envdata_available(envdata = envdata_all, env_vector = select_factors)
+
+#Investigate how it affects the data that we have some upper detection limits for some of our samples with Na, K, and Al. 
+icp_el %>%
+  select(Sample_type4, Na, K, Al, Ca, Mg) %>%
+  ggpairs(aes(color = Sample_type4))
+
+#Correlating other minerals with Na, Al, and K, looks rather strange. Leave Na, K, and Al out of the analysis.
+
+icp_el$Sample_type4
+
+```
+
+
+```{r load data, fig.height=13, fig.width=26}
+
+#We cannot rely on the Na, K, and Al metals as these have reached a detection limit for some of the samples but not for other, presumably due to different running settings on the ICPMS machine.
+#We therefore need to remove those from the dataset.
+envdata_all <- envdata_all[ , -which(names(envdata_all) %in% c("Na", "K", "Al"))]
+
+
+# Abiotic factors
+
+# Create abiotic factors data table
+envdata_all <- envdata_all %>% mutate(CN = Carbon / Nitrogen)
+select_factors <- c("Name","Sample_type4","Sample_type4","Temperature","pH","Conductivity","Carbon","Nitrogen", "CN", "GWC")
+abiotic <- envdata_available(envdata = envdata_all, env_vector = select_factors)
+
+
+
+# 
+# # Do any of the elements show correlations
+select_factors <- c("Sample_type4","Sample_type4","pH","Temperature","Conductivity","Carbon", "Nitrogen", "GWC",colnames(envdata_all[,15:36]))
+icp_el <- envdata_available(envdata = envdata_all, env_vector = select_factors)
+
+
+icp_el2 <- icp_el
+numeric_columns <- icp_el2[sapply(icp_el2, is.numeric)]
+
+# Create an empty list to store results
+correlation_results <- list()
+
+# Loop through each pair of numerical columns
+for (i in 1:(ncol(numeric_columns) - 1)) {
+  for (j in (i + 1):ncol(numeric_columns)) {
+    # Calculate correlation test
+    corr_test <- cor.test(numeric_columns[, i], numeric_columns[, j], method = "spearman")
+    
+    # Store results in a list
+    correlation_results <- c(correlation_results, list(
+      c(colnames(numeric_columns)[i], colnames(numeric_columns)[j], corr_test$estimate, corr_test$p.value)
+    ))
+  }
+}
+
+# Convert the list to a data frame
+correlation_df <- as.data.frame(do.call(rbind, correlation_results))
+colnames(correlation_df) <- c("Variable_1", "Variable_2", "Correlation_Coefficient", "P_Value")
+
+# Perform Benjamini-Hochberg adjustment
+correlation_df$Adjusted_P_Value <- p.adjust(correlation_df$P_Value, method = "BH")
+nrow(correlation_df)
+#351 tests conducted
+
+correlation_df2 <- correlation_df %>%
+  dplyr::filter(Adjusted_P_Value < 0.05) %>%
+  dplyr::filter(Correlation_Coefficient > 0.7) %>%
+  dplyr::filter(Variable_1 != "Cd") %>%
+  dplyr::filter(Variable_1 != "B") %>%
+  dplyr::filter(Variable_1 != "Pb") %>%
+  dplyr::filter(Variable_1 != "V") %>%
+  dplyr::filter(Variable_1 != "Cr") %>%
+  dplyr::filter(Variable_1 != "Mn") %>%
+  dplyr::filter(Variable_1 != "Fe") %>%
+  dplyr::filter(Variable_1 != "Co") %>%
+  dplyr::filter(Variable_1 != "Cu") %>%
+  dplyr::filter(Variable_1 != "Ba") %>%
+  dplyr::filter(Variable_2 != "Cd")
+
+correlation_df2$Correlation_Coefficient <- as.numeric(correlation_df2$Correlation_Coefficient)
+
+###############
+variable_names <- unique(c(correlation_df2$Variable_1, correlation_df2$Variable_2))
+
+# Filter icp_el2 data frame to include only selected columns
+icp_el3 <- icp_el2 %>%
+  select(any_of(variable_names)) %>%
+  cbind(., icp_el2$Sample_type4) %>%
+  dplyr::rename("Sample_type4" = 9)
+
+icp_tr <- icp_el3 %>%
+  dplyr::filter(Sample_type4 == "Tramway Ridge")
+
+numeric_columns <- icp_tr[sapply(icp_tr, is.numeric)]
+
+correlation_results <- list()
+
+# Loop through each pair of numerical columns
+for (i in 1:(ncol(numeric_columns) - 1)) {
+  for (j in (i + 1):ncol(numeric_columns)) {
+    # Calculate correlation test
+    corr_test <- cor.test(numeric_columns[, i], numeric_columns[, j], method = "spearman")
+    
+    # Store results in a list
+    correlation_results <- c(correlation_results, list(
+      c(colnames(numeric_columns)[i], colnames(numeric_columns)[j], corr_test$estimate, corr_test$p.value)
+    ))
+  }
+}
+
+# Convert the list to a data frame
+correlation_df_tr <- as.data.frame(do.call(rbind, correlation_results))
+colnames(correlation_df_tr) <- c("Variable_1", "Variable_2", "Correlation_Coefficient", "P_Value")
+
+# Perform Benjamini-Hochberg adjustment
+correlation_df_tr$Adjusted_P_Value <- p.adjust(correlation_df_tr$P_Value, method = "BH")
+
+################
+icp_ex <- icp_el3 %>%
+  dplyr::filter(Sample_type4 == "Exp Hot Soil")
+
+numeric_columns <- icp_ex[sapply(icp_ex, is.numeric)]
+
+correlation_results <- list()
+
+# Loop through each pair of numerical columns
+for (i in 1:(ncol(numeric_columns) - 1)) {
+  for (j in (i + 1):ncol(numeric_columns)) {
+    # Calculate correlation test
+    corr_test <- cor.test(numeric_columns[, i], numeric_columns[, j], method = "spearman")
+    
+    # Store results in a list
+    correlation_results <- c(correlation_results, list(
+      c(colnames(numeric_columns)[i], colnames(numeric_columns)[j], corr_test$estimate, corr_test$p.value)
+    ))
+  }
+}
+
+# Convert the list to a data frame
+correlation_df_ex <- as.data.frame(do.call(rbind, correlation_results))
+colnames(correlation_df_ex) <- c("Variable_1", "Variable_2", "Correlation_Coefficient", "P_Value")
+
+# Perform Benjamini-Hochberg adjustment
+correlation_df_ex$Adjusted_P_Value <- p.adjust(correlation_df_ex$P_Value, method = "BH")
+
+##################
+icp_sub <- icp_el3 %>%
+  dplyr::filter(Sample_type4 == "Subglacial")
+
+numeric_columns <- icp_sub[sapply(icp_sub, is.numeric)]
+
+correlation_results <- list()
+
+# Loop through each pair of numerical columns
+for (i in 1:(ncol(numeric_columns) - 1)) {
+  for (j in (i + 1):ncol(numeric_columns)) {
+    # Calculate correlation test
+    corr_test <- cor.test(numeric_columns[, i], numeric_columns[, j], method = "spearman")
+    
+    # Store results in a list
+    correlation_results <- c(correlation_results, list(
+      c(colnames(numeric_columns)[i], colnames(numeric_columns)[j], corr_test$estimate, corr_test$p.value)
+    ))
+  }
+}
+
+# Convert the list to a data frame
+correlation_df_sub <- as.data.frame(do.call(rbind, correlation_results))
+colnames(correlation_df_sub) <- c("Variable_1", "Variable_2", "Correlation_Coefficient", "P_Value")
+
+# Perform Benjamini-Hochberg adjustment
+correlation_df_sub$Adjusted_P_Value <- p.adjust(correlation_df_sub$P_Value, method = "BH")
+
+##############
+corr_all2 <- rbind(correlation_df2, correlation_df_tr, correlation_df_ex, correlation_df_sub)
+
+####None of the correlations are significant within subcategory.
+
+#write.csv(corr_all2, "correlations_sig_big.csv")
+```
+
+
+
+
+```{r, message=FALSE, fig.height=6.5, fig.width=8}
+fig_cor_all <- icp_el %>%
+  select(Sample_type4, Temperature, pH, Conductivity, Carbon, Nitrogen, GWC, Mg, Ca, Sr) %>%
+  ggpairs(aes(color = Sample_type4))
+
+fig_cor_env <- icp_el %>%
+  select(Sample_type4, Temperature, pH, Conductivity, Carbon, Nitrogen) %>%
+  ggpairs(aes(color = Sample_type4))
+
+fig_cor_ions <- icp_el %>%
+  select(Sample_type4, Mg, Ca, Sr) %>%
+  ggpairs(aes(color = Sample_type4))
+
+
+# ggsave("Saved_plots/fig_cor_env.png", 
+#        fig_cor_env, 
+#        width = 30, 
+#        height = 20, 
+#        units = "cm", 
+#        dpi = 1000, 
+#        device = "png")
+# 
+# ggsave("Saved_plots/fig_cor_ions.png", 
+#        fig_cor_ions, 
+#        width = 30, 
+#        height = 20, 
+#        units = "cm", 
+#        dpi = 1000, 
+#        device = "png")
+
+```
+
+There are a few interesting observations. For example that Ca and Sr seems to correlate and there are more of these in the subglacial samples compared to exposed.
+
+
+##### Analysis by sampling site
+```{r}
+
+### stats for env parameters
+#envdata_for_ttest <- envdata_all %>% mutate(CN = Carbon / Nitrogen)
+#select_factors_ttest <- c("pH", "Temperature", "Conductivity", "Carbon", "Nitrogen", "CN", "GWC")
+
+# Test if the levels of any of the chosen factors differ significantly between exposed and subglacial sites.
+# Since some of the samples varies a lot and might have been sampled or tested differently, we want to check if outliers might skew the ttest.
+
+#Without outliers removed:
+#ttest_function(envdata = envdata_for_ttest, env_vector = select_factors_ttest)
+
+#With outliers removed:
+#ttest_function_no_outlier(envdata = envdata_for_ttest, env_vector = select_factors_ttest)
+#When we remove outliers, CN is not significant anymore
+```
+
+```{r}
+
+# Create a copy of the input dataframe with the same column and row names
+env_data <- envdata_all[,9:38][,-4][,-28]
+outlier_removed_data <- env_data
+
+# Define the groups
+groups <- c("Subglacial", "Tramway Ridge", "Exp Hot Soil")
+
+# Loop through each group
+for (group in groups) {
+  # Subset the dataframe for the current group
+  group_data <- env_data[env_data$group == group, ]
+  
+  # Loop through each column of the current group
+  for (col in 1:ncol(group_data)) {
+    # Exclude missing values from the column for outlier detection
+    column_values <- group_data[, col]
+    column_values_no_na <- column_values[!is.na(column_values)]
+    
+    # Calculate the lower and upper quartiles for the column
+    lower_quartile <- quantile(column_values_no_na, 0.25, na.rm = TRUE)
+    upper_quartile <- quantile(column_values_no_na, 0.75, na.rm = TRUE)
+    
+    # Calculate the interquartile range (IQR) for the column
+    iqr <- upper_quartile - lower_quartile
+    
+    # Calculate the lower and upper bounds for outlier detection
+    lower_bound <- lower_quartile - (1.5 * iqr)
+    upper_bound <- upper_quartile + (1.5 * iqr)
+    
+    # Identify outliers and replace them with NA in the new dataframe
+    outlier_removed_data[env_data$group == group, col] <- ifelse(column_values < lower_bound | column_values > upper_bound,
+                                                                 NA, column_values)
+  }
+}
+
+# Print the resulting table with outliers replaced by NAs and same column and row names
+print(outlier_removed_data)
+
+```
+
+
+
+
+```{r, warning=FALSE}
+
+### Analyse data by temperature in each site
+
+outlier_removed_data$Sample_type4 <- envdata_all$Sample_type4
+
+abiotic <- outlier_removed_data
+
+#abiotic["Sample_type4"][abiotic["Sample_type4"] == "Exposed"] <- "Exposed"
+#abiotic["Sample_type4"][abiotic["Sample_type4"] == "Subglacial"] <- "Subglacial"
+
+
+# exposed_col <- "#F9A620"
+# subglacial_col <- "#67a9cf"
+# tr_col <- "#44AF69"
+
+exposed_col <- "darkorange2"
+subglacial_col <- "#386cb0"
+tr_col <- "#7fc97f"
+
+
+
+library("ggpubr")
+library("EnvStats")
+```
+
+
+
+
+```{r}
+### Metals
+# # Start by selecting the metals we saw that may be different between transects
+envdata_for_ttest <- envdata_all
+#envdata_for_ttest <- outlier_removed_data
+
+# outlier_removed_data
+# envdata_all
+
+select_factors_ttest <- c(colnames(envdata_all[16:36]))
+
+p_vals_metals <- ttest_function_no_outlier(envdata = envdata_for_ttest, env_vector = select_factors_ttest)
+
+
+
+# p values when outliers are taken out
+p_vals_metals[p_vals_metals$sig == 'significant', ]
+
+#p values when outliers are kept.
+ttest_function(envdata = envdata_for_ttest, env_vector = select_factors_ttest)[p_vals_metals$sig == 'significant', ]
+
+
+#choose the metals that significantly differ between exposed and subglacial sites
+significant_Sample_type4 <- c(p_vals_metals[p_vals_metals$sig == 'significant', ]$select_factors_ttest)
+
+# "Mg" "Ca" "Sr" "Ba" "S"  "Se" "Mn" "Fe" "Cd"
+``` 
+
+```{r}
+library(FSA)
+library(ggstatsplot)
+abiotf <- abiotic %>%
+  dplyr::select(29, 1:6, "Mg", "Ca","Sr", "S", "Se", "Cd")
+
+abiotf[abiotf < 0.00000000] <- NA
+
+#Replace
+abiotf$Sample_type4 <- gsub("Subglacial", "3-Subglacial", abiotf$Sample_type4)
+
+# Replace "Exp Hot Soil" with "2-Exp Hot Soil"
+abiotf$Sample_type4 <- gsub("Exp Hot Soil", "2-Exp Hot Soil", abiotf$Sample_type4)
+
+# Replace "Tramway Ridge" with "1-Tramway Ridge"
+abiotf$Sample_type4 <- gsub("Tramway Ridge", "1-Tramway Ridge", abiotf$Sample_type4)
+
+colnames_f <- colnames(abiotf)
+plot_list <- list()
+
+for(i in 2:length(colnames_f)) {
+  plot_list[[i]] <- ggbetweenstats(data = abiotf, 
+                                 x = "Sample_type4",
+                                 y = !!colnames_f[i],
+                                 plot.type = "box",
+                                 type = "nonparametric",
+                                 violin.args = list(color = "transparent",
+                                                    fill = "transparent"),
+                                 pairwise.comparisons = TRUE,
+                                p.adjust.method  = "BH",
+                                 xlab = "",
+                                 results.subtitle = FALSE,
+                                centrality.plotting = FALSE,
+                                mean.point.args = list(color = "transparent",
+                                                       fill = "transparent"),
+                      point.args = list(alpha = 1, size = 3,
+                                        position = ggplot2::position_jitterdodge(dodge.width = 0.6),
+                                        stroke = 0, na.rm = TRUE),
+                      ggtheme = theme_bw()) +
+    scale_color_manual(values = c(tr_col, exposed_col, subglacial_col)) +
+    theme(axis.text.x  = element_blank(),
+          axis.ticks.x = element_blank(),
+    axis.text.y  = element_text(size=10),
+    axis.title.y = element_text(size=12),
+    axis.title.y.right = element_blank(), 
+    axis.text.y.right = element_blank(), 
+    axis.ticks.y.right = element_blank()) + 
+      stat_n_text(size=3, ypos = 3)
+}
+
+plot_list <- plot_list[-1]
+
+env_plotsf <- ggarrange(plotlist = plot_list, 
+                        common.legend = TRUE,
+                        ncol = 3, nrow = 4)
+env_plotsf
+
+#ggsave("Figure 2_2.svg", env_plotsf, width = 240, height = 300, units = "mm", dpi = 300)
+
+
+test <- ggbetweenstats(data = abiotf, 
+                                 x = "Sample_type4",
+                                 y = "Temperature",
+                                 plot.type = "box",
+                                 type = "nonparametric",
+                                 violin.args = list(color = "transparent",
+                                                    fill = "transparent"),
+                                 pairwise.comparisons = TRUE,
+                                p.adjust.method  = "BH",
+                                 xlab = "",
+                                 results.subtitle = FALSE,
+                                centrality.plotting = FALSE,
+                                mean.point.args = list(color = "transparent",
+                                                       fill = "transparent"),
+                      point.args = list(alpha = 1, size = 3,
+                                        position = ggplot2::position_jitterdodge(dodge.width = 0.6),
+                                        stroke = 0, na.rm = TRUE),
+                      ggtheme = theme_bw()) +
+    scale_color_manual(values = c(tr_col, exposed_col, subglacial_col)) +
+    theme(axis.text.x  = element_blank(),
+          axis.ticks.x = element_blank(),
+    axis.text.y  = element_text(size=10),
+    axis.title.y = element_text(size=12),
+    axis.title.y.right = element_blank(), 
+    axis.text.y.right = element_blank(), 
+    axis.ticks.y.right = element_blank()) + 
+      stat_n_text(size=3, ypos = 3)
+
+test
+
+####################
+
+medians <- abiotf %>%
+  dplyr::group_by(Sample_type4 ) %>%
+  dplyr::summarise(across(everything(), median, na.rm = TRUE))
+
+medians
+```

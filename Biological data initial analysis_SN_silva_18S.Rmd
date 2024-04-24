@@ -1,0 +1,228 @@
+---
+title: "Bio data analysis"
+author: "Stephen Noell"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE, 
+                      warning = FALSE,
+                      fig.align = "center",
+                      fig.width = 10,
+                      fig.height = 6)
+```
+
+
+```{r Libraries and seed}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation
+library("phyloseq")        # analysis of microbial communities
+library("vegan")           # ecological multivariate analyses
+library("patchwork")       # plots together
+library("paletteer") #color package
+library("pairwiseAdonis")
+library("microbiome") #for analyzing phyloseq objects
+library("viridis") #color package
+library("svglite") #for saving SVGs
+library("ggpubr") #for saving plots
+library("here")            # set the path to the folder
+library("qwraps2")         # quick summary statistics
+options(qwraps2_markup = "markdown") # define document type
+
+
+set.seed(57)
+```
+
+
+```{r Load the data}
+# Load the final phyloseq object
+physeq_18s_erebus_silva <- readRDS("physeq_18s_erebus_silva")
+
+```
+
+### Sequences and ASVs data
+
+```{r ASVs and reads statistics}
+
+# Inspect number of reads and ASVs
+
+colSums.asv.df <- data.frame(colSums(otu_table(physeq_18s_erebus_silva))) %>%
+  tibble::rownames_to_column("ASV")
+
+plot_asvs <- ggplot(colSums.asv.df, aes(x = reorder(ASV, -colSums.otu_table.physeq_18s_erebus_silva..), y = colSums.otu_table.physeq_18s_erebus_silva..)) + 
+  geom_bar(stat = "identity") +
+  ylab("ASVs") +
+  xlab("") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+
+# Inspect number of sequences
+
+rowSums.asv.df <- data.frame(rowSums(otu_table(physeq_18s_erebus_silva))) %>%
+  rownames_to_column("Samples")
+
+plot_reads <- ggplot(rowSums.asv.df, aes(x = reorder(Samples, -rowSums.otu_table.physeq_18s_erebus_silva..), y =
+               rowSums.otu_table.physeq_18s_erebus_silva..)) +
+  geom_bar(stat = "identity") + 
+  coord_flip() +
+  ylab("Reads") +
+  xlab("")
+
+plot_asvs | plot_reads
+
+summary1 <-
+  list("ASVs" = 
+         list("min" = ~ min(colSums.otu_table.physeq_18s_erebus_silva..),
+            "median" = ~ median(colSums.otu_table.physeq_18s_erebus_silva..),
+            "max"  = ~ max(colSums.otu_table.physeq_18s_erebus_silva..))
+            )
+
+summary_table(colSums.asv.df, summary1)
+
+summary2 <-
+  list("Reads" = 
+         list("min" = ~ min(rowSums.otu_table.physeq_18s_erebus_silva..),
+            "median" = ~ median(rowSums.otu_table.physeq_18s_erebus_silva..),
+            "max"  = ~ max(rowSums.otu_table.physeq_18s_erebus_silva..))
+            )
+
+summary_table(rowSums.asv.df, summary2)
+```
+
+### Filtering by taxonomy
+
+```{r Filter by taxonomy}
+
+# This taxonomy was obtained with the baysean classifier in DADA2 pipeline
+
+# Show available ranks in the dataset
+rank_names(physeq_18s_erebus_silva)
+
+ # How many domains? (Kingdom in the taxonomy table)
+table(tax_table(physeq_18s_erebus_silva)[, "Kingdom"], exclude = NULL) 
+
+# How many Phyla?
+table(tax_table(physeq_18s_erebus_silva)[, "Phylum"], exclude = NULL) 
+
+# We have a LOT of NA at the Phylum level - almost half of the ASVs
+
+```
+
+
+### Filtering by ASVs
+
+```{r Filter by ASVs}
+
+# As seen before the minimum number of reads for a given ASV in the DADA2 pipeline is 2.
+# Removing these ASVs is a common filtering strategy - they may be a sequencing artifact
+
+# How many ASVs fit this?
+colSums.asv.df.2<- colSums.asv.df %>%
+  filter(colSums.otu_table.physeq_18s_erebus_silva.. < 3)
+
+nrow(colSums.asv.df.2)
+
+# Remove ASVs that do not appear more than 2 times 
+seq_flt <- genefilter_sample(physeq_18s_erebus_silva, filterfun_sample(function(x) x > 2))
+
+erebus18s_fs2 <- prune_taxa(seq_flt, physeq_18s_erebus_silva) 
+erebus18s_fs2
+
+#does this help remove NA 
+table(tax_table(erebus18s_fs2)[, "Kingdom"], exclude = NULL)
+table(tax_table(erebus18s_fs2)[, "Phylum"], exclude = NULL)
+# seems to remove NA phylum at similar rates as most others, NA phylum still almost half of ASVs
+
+erebus18s_fs <- physeq_18s_erebus_silva
+
+```
+
+
+```{r Normalise}
+
+# Transform data using centered log ratio (clr)
+erebus18s_fsr <- microbiome::transform(erebus18s_fs, "clr")
+erebus18s_fs2r <- microbiome::transform(erebus18s_fs2, "clr")
+
+#also transform to relative abundance
+erebus18s_fsa<- transform_sample_counts(erebus18s_fs, function(x) x / sum(x) )
+
+```
+
+
+```{r Distance}
+
+# Calculate the distance
+unifrac.erebus18s_fsr <- phyloseq::distance(erebus18s_fsr, method = "unifrac")
+unifrac.erebus18s_fs2r <- phyloseq::distance(erebus18s_fs2r, method = "unifrac")
+
+```
+
+
+```{r PCoA Ordination}
+
+# Get the PCoA ordination
+erebus18s_fsr.mds <- ordinate(erebus18s_fsr, "MDS", distance = unifrac.erebus18s_fsr)
+erebus18s_fs2r.mds <- ordinate(erebus18s_fs2r, "MDS", distance = unifrac.erebus18s_fs2r)
+
+# Plot
+
+pcoa.erebus18s_fsr<- plot_ordination(erebus18s_fsr, erebus18s_fsr.mds, 
+                color="Site", shape = "Site", label= "Sample") +
+  geom_point(size=2) +
+  labs(title = "No filter")
+
+pcoa.erebus18s_fs2r<- plot_ordination(erebus18s_fs2r, erebus18s_fs2r.mds, 
+                color="Site", shape = "Site", label= "Sample") +
+  geom_point(size=2) +
+  labs(title = "Filter <2 instance ASVs")
+
+
+(pcoa.erebus18s_fsr | pcoa.erebus18s_fs2r)
+
+#removing low read ASVs doesn't help much - only explains 0.6% more variation
+```
+
+
+```{r Rarefaction curves}
+
+rarecurve(otu_table(erebus18s_fs), step = 100, 10000, lwd=2, ylab="ASVs")
+
+```
+
+Function rarecurve draws a rarefaction curve for each row of the input data. Specifying sample size = 10000 horizontal lines are drawn for the rarefied species richnesses.
+
+```{r}
+# Crater 6-low looks to not have any ASVs? Check on this
+erebus18s_fs_c6l <- subset_samples(erebus18s_fs, sample_names(erebus18s_fs) == "Crater6-low-18s")
+
+c6l <- data.frame(t(otu_table(erebus18s_fs_c6l))) %>%
+  dplyr::filter(., Crater6.low.18s > 0)
+
+c6l
+# in Crater 6 low, ASV11 has 601 reads as the most, next abundant are ASV90 and ASV135 with 300 reads, both stramenopiles. Seems worth keeping this sample in.
+
+```
+
+
+
+```{r}
+#Save final version of physeq object, with contaminants removed and CLR abundance adjusted
+saveRDS(erebus18s_fsr, "physeq_18s_erebus_silva_nof_fin.clr")
+
+#Save version of physeq object, with contaminants removed but not normalized
+saveRDS(erebus18s_fs, "physeq_18s_erebus_silva_nof_fin.cont")
+
+#Save version of physeq object, with contaminants removed and normalized to relative abundance
+saveRDS(erebus18s_fsa, "physeq_18s_erebus_silva_nof_fin.rel")
+
+```
+
+```{r}
+write.csv(tax_table(erebus18s_fsa), file="18s_erebus_tax.csv")
+write.csv(t(otu_table(erebus18s_fsa)), file="18s_erebus_otu.csv")
+```

@@ -1,0 +1,310 @@
+---
+title: "Bio data analysis"
+author: "Stephen Noell"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE, 
+                      warning = FALSE,
+                      fig.align = "center",
+                      fig.width = 10,
+                      fig.height = 6)
+```
+
+
+```{r Libraries and seed}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation
+library("phyloseq")        # analysis of microbial communities
+library("vegan")           # ecological multivariate analyses
+library("patchwork")       # plots together
+library("paletteer") #color package
+library("pairwiseAdonis")
+library("microbiome") #for analyzing phyloseq objects
+library("viridis") #color package
+library("svglite") #for saving SVGs
+library("ggpubr") #for saving plots
+library("here")            # set the path to the folder
+library("qwraps2")         # quick summary statistics
+options(qwraps2_markup = "markdown") # define document type
+
+
+set.seed(57)
+```
+
+
+```{r Load the data}
+# Load the final phyloseq object
+physeq_its_erebus <- readRDS("physeq_its_erebus")
+
+```
+
+### Sequences and ASVs data
+
+```{r ASVs and reads statistics}
+
+# Inspect number of reads and ASVs
+
+colSums.asv.df <- data.frame(colSums(otu_table(physeq_its_erebus))) %>%
+  tibble::rownames_to_column("ASV")
+
+plot_asvs <- ggplot(colSums.asv.df, aes(x = reorder(ASV, -colSums.otu_table.physeq_its_erebus..), y = colSums.otu_table.physeq_its_erebus..)) + 
+  geom_bar(stat = "identity") +
+  ylab("ASVs") +
+  xlab("") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+
+# Inspect number of sequences
+
+rowSums.asv.df <- data.frame(rowSums(otu_table(physeq_its_erebus))) %>%
+  rownames_to_column("Samples")
+
+plot_reads <- ggplot(rowSums.asv.df, aes(x = reorder(Samples, -rowSums.otu_table.physeq_its_erebus..), y =
+               rowSums.otu_table.physeq_its_erebus..)) +
+  geom_bar(stat = "identity") + 
+  coord_flip() +
+  ylab("Reads") +
+  xlab("")
+
+plot_asvs | plot_reads
+
+summary1 <-
+  list("ASVs" = 
+         list("min" = ~ min(colSums.otu_table.physeq_its_erebus..),
+            "median" = ~ median(colSums.otu_table.physeq_its_erebus..),
+            "max"  = ~ max(colSums.otu_table.physeq_its_erebus..))
+            )
+
+summary_table(colSums.asv.df, summary1)
+
+summary2 <-
+  list("Reads" = 
+         list("min" = ~ min(rowSums.otu_table.physeq_its_erebus..),
+            "median" = ~ median(rowSums.otu_table.physeq_its_erebus..),
+            "max"  = ~ max(rowSums.otu_table.physeq_its_erebus..))
+            )
+
+summary_table(rowSums.asv.df, summary2)
+```
+
+### Filtering by taxonomy
+
+```{r Filter by taxonomy}
+
+# This taxonomy was obtained with the baysean classifier in DADA2 pipeline
+
+# Show available ranks in the dataset
+rank_names(physeq_its_erebus)
+
+ # How many domains? (Kingdom in the taxonomy table)
+table(tax_table(physeq_its_erebus)[, "Kingdom"], exclude = NULL) 
+
+# How many Phyla?
+table(tax_table(physeq_its_erebus)[, "Phylum"], exclude = NULL) 
+
+# We have a LOT of NA at the Phylum level - 75 out of 214 ASVs, 35%
+
+```
+
+
+### Filtering by ASVs
+
+```{r Filter by ASVs}
+
+# As seen before the minimum number of reads for a given ASV in the DADA2 pipeline is 2.
+# Removing these ASVs is a common filtering strategy - they may be a sequencing artifact
+
+# How many ASVs fit this?
+colSums.asv.df.2<- colSums.asv.df %>%
+  filter(colSums.otu_table.physeq_its_erebus.. < 3)
+
+nrow(colSums.asv.df.2)
+
+# Remove ASVs that do not appear more than 2 times 
+seq_flt <- genefilter_sample(physeq_its_erebus, filterfun_sample(function(x) x > 2))
+
+erebusits_fs2 <- prune_taxa(seq_flt, physeq_its_erebus) 
+erebusits_fs2
+
+#does this help remove NA 
+table(tax_table(erebusits_fs2)[, "Kingdom"], exclude = NULL)
+table(tax_table(erebusits_fs2)[, "Phylum"], exclude = NULL)
+# seems to remove NA phylum at similar rates as most others, NA phylum still 29% ASVs
+
+erebusits_fs <- physeq_its_erebus
+
+```
+
+
+```{r Normalise}
+
+# Transform data using centered log ratio (clr)
+erebusits_fsr <- microbiome::transform(erebusits_fs, "clr")
+erebusits_fs2r <- microbiome::transform(erebusits_fs2, "clr")
+
+#also transform to relative abundance
+erebusits_fsa<- transform_sample_counts(erebusits_fs, function(x) x / sum(x) )
+
+```
+
+
+```{r Distance}
+
+# Calculate the distance
+unifrac.erebusits_fsr <- phyloseq::distance(erebusits_fsr, method = "unifrac")
+unifrac.erebusits_fs2r <- phyloseq::distance(erebusits_fs2r, method = "unifrac")
+
+```
+
+
+```{r PCoA Ordination}
+
+# Get the PCoA ordination
+erebusits_fsr.mds <- ordinate(erebusits_fsr, "MDS", distance = unifrac.erebusits_fsr)
+erebusits_fs2r.mds <- ordinate(erebusits_fs2r, "MDS", distance = unifrac.erebusits_fs2r)
+
+# Plot
+
+pcoa.erebusits_fsr<- plot_ordination(erebusits_fsr, erebusits_fsr.mds, 
+                color="Site", shape = "Site", label= "Sample") +
+  geom_point(size=2) +
+  labs(title = "No filter")
+
+pcoa.erebusits_fs2r<- plot_ordination(erebusits_fs2r, erebusits_fs2r.mds, 
+                color="Site", shape = "Site", label= "Sample") +
+  geom_point(size=2) +
+  labs(title = "Filter <2 instance ASVs")
+
+
+(pcoa.erebusits_fsr | pcoa.erebusits_fs2r)
+
+#removing low read ASVs doesn't help - actually explains less variance in axis1
+```
+
+
+```{r Rarefaction curves}
+
+rarecurve(otu_table(erebusits_fs), step = 100, 10000, lwd=2, ylab="ASVs")
+
+```
+
+Function rarecurve draws a rarefaction curve for each row of the input data. Specifying sample size = 10000 horizontal lines are drawn for the rarefied species richnesses.
+
+```{r}
+# How are those NA placed in the phylogenetic tree?
+
+plot_tree(erebusits_fsa, ladderize="left", color="Phylum")
+
+
+```
+
+
+
+```{r}
+# Several samples have very low read counts and ASVs; check on these:
+#ERB-1A-ITS
+# Crater 6-low
+#Crater1-0-1cm-ITS
+
+########C6L
+erebusits_fs_c6l <- subset_samples(erebusits_fs, sample_names(erebusits_fs) == "Crater6-low-ITS")
+
+c6l <- data.frame(t(otu_table(erebusits_fs_c6l))) %>%
+  dplyr::filter(., Crater6.low.ITS > 0)
+c6l
+
+# 4 ASVs, one at 115 reads, none else above 35
+
+################ERB1A
+erebusits_fs_erb1a <- subset_samples(erebusits_fs, sample_names(erebusits_fs) == "ERB-1A-ITS")
+
+erb1a <- data.frame(t(otu_table(erebusits_fs_erb1a))) %>%
+  dplyr::filter(., ERB.1A.ITS > 0)
+erb1a
+
+#6 ASVs, none above 45 reads
+
+###################C1
+
+erebusits_fs_c1 <- subset_samples(erebusits_fs, sample_names(erebusits_fs) == "Crater1-0-1cm-ITS")
+
+c1 <- data.frame(t(otu_table(erebusits_fs_c1))) %>%
+  dplyr::filter(., Crater1.0.1cm.ITS > 0)
+c1
+
+#C1 seems a little better, more ASVs (7)
+
+#try removing low read count samples
+erebusits_nolow <- subset_samples(erebusits_fs, 
+                                  sample_names(erebusits_fs) != "Crater6-low-ITS")
+erebusits_nolow <- subset_samples(erebusits_nolow, 
+                                  sample_names(erebusits_nolow) != "Crater1-0-1cm-ITS")
+erebusits_nolow <- subset_samples(erebusits_nolow, 
+                                  sample_names(erebusits_nolow) != "ERB-1A-ITS")
+erebusits_nolow
+
+erebusits_nolow_clr <- microbiome::transform(erebusits_nolow, "clr")
+unifrac.erebusits_nolow_clr <- phyloseq::distance(erebusits_nolow_clr, method = "unifrac")
+erebusits_nolow_clr.mds <- ordinate(erebusits_nolow_clr, "MDS", 
+                                    distance = unifrac.erebusits_nolow_clr)
+pcoa.erebusits_nolow <- plot_ordination(erebusits_nolow_clr, erebusits_nolow_clr.mds, 
+                color="Site", shape = "Site", label= "Sample") +
+  geom_point(size=2) +
+  labs(title = "No low 3 samples")
+
+(pcoa.erebusits_fsr | pcoa.erebusits_nolow)
+
+#conservative approach and keeping for now
+```
+
+```{r}
+#erebusits_fs <- subset_samples(erebusits_fs, sample_names(erebusits_fs) != "Crater6-low-ITS")
+
+# change incertae_sedis to just NA
+erebusits_fs_tax <- as.data.frame(tax_table(erebusits_fs)) %>%
+  mutate_all(., ~ replace(.,   str_detect(., "Incertae_sedis"), NA))
+
+erebusits_fs_tax$Kingdom <- gsub("k__", "", erebusits_fs_tax$Kingdom)
+erebusits_fs_tax$Phylum <- gsub("p__", "", erebusits_fs_tax$Phylum)
+erebusits_fs_tax$Class <- gsub("c__", "", erebusits_fs_tax$Class)
+erebusits_fs_tax$Order <- gsub("o__", "", erebusits_fs_tax$Order)
+erebusits_fs_tax$Family <- gsub("f__", "", erebusits_fs_tax$Family)
+erebusits_fs_tax$Genus <- gsub("g__", "", erebusits_fs_tax$Genus)
+erebusits_fs_tax$Species <- gsub("s__", "", erebusits_fs_tax$Species)
+
+tax <- as.matrix(erebusits_fs_tax)
+
+erebusits_fs3 <- phyloseq(otu_table(erebusits_fs), 
+               sample_data(erebusits_fs), 
+               tax_table(tax),
+                phy_tree(erebusits_fs))
+
+erebusits_fsr <- microbiome::transform(erebusits_fs3, "clr")
+erebusits_fsa<- transform_sample_counts(erebusits_fs3, function(x) x / sum(x) )
+
+```
+
+
+```{r}
+#Save final version of physeq object, with contaminants removed and CLR abundance adjusted
+saveRDS(erebusits_fsr, "physeq_its_erebus.clr")
+
+#Save version of physeq object, with contaminants removed but not normalized
+saveRDS(erebusits_fs3, "physeq_its_erebus.cont")
+
+#Save version of physeq object, with contaminants removed and normalized to relative abundance
+saveRDS(erebusits_fsa, "physeq_its_erebus.rel")
+```
+
+```{r}
+write.csv(tax_table(erebusits_fsa), file="its_erebus_tax.csv")
+write.csv(t(otu_table(erebusits_fsa)), file="its_erebus_otu.csv")
+
+```
+

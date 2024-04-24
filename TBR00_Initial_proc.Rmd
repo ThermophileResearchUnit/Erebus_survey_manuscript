@@ -1,0 +1,900 @@
+---
+title: "Initial processing"
+author: "Trine"
+date: "2023-01-19"
+output: html_document
+---
+
+Add to the initial analysis: sampling year and that it doesnt affect the groupings. 
+
+```{r Libraries and seed}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation
+library("phyloseq")        # analysis of microbial communities
+library("vegan")           # ecological multivariate analyses
+
+library("qwraps2")         # quick summary statistics
+options(qwraps2_markup = "markdown") # define document type
+
+library("patchwork")       # plots together
+library("paletteer") #color package
+#library("pairwiseAdonis")
+library("microbiome") #for analyzing phyloseq objects
+library("viridis") #color package
+library("svglite") #for saving SVGs
+library("ggpubr") #for saving plots
+library("here")            # set the path to the folder 
+
+set.seed(57)
+```
+
+
+The following chunk defines the ggrare function used later
+```{r, include=FALSE}
+#' Make a rarefaction curve using ggplot2
+#' @param physeq_object A phyloseq class object, from which abundance data are extracted
+#' @param step Step Size for sample size in rarefaction curves
+#' @param label Default `NULL`. Character string. The name of the variable to map to text labels on the plot. Similar to color option but for plotting text.
+#' @param color Default `NULL`. Character string. The name of the variable to map to the colors in the plot. This can be a sample variables among the set returned by sample_variables(physeq_object) or taxonomic rank, among the set returned by rank_names(physeq_object)
+#' @param plot default `TRUE`. Logical. Should the graph be plotted
+#' @param parallel default `FALSE`. Logical. Should rarefaction be parallelized
+#' @param se default `TRUE`. Logical. Should standard errors be calculated.
+#' @examples
+#' good_taxon_table <- data.frame(sum.taxonomy = c("a;b;c;d;f;u", "p;q;r;s;t;u"),
+#' site_1 = c(0,1), site_2 = c(10, 20))
+#' good_maps <- data.frame(site = c("site_1", "site_2"),
+#' season = c("wet", "dry"), host = c("oak", "sage"))
+#' physeq_object <- convert_anacapa_to_phyloseq(good_taxon_table, good_maps)
+#' ggrare(physeq_object, step = 20, se = TRUE)
+#' @export
+
+ggrare <- function(physeq_object, step = 10, label = NULL, color = NULL, plot = TRUE, parallel = FALSE, se = TRUE) {
+  
+  x <- methods::as(phyloseq::otu_table(physeq_object), "matrix")
+  if (phyloseq::taxa_are_rows(physeq_object)) { x <- t(x) }
+  
+  ## This script is adapted from vegan `rarecurve` function
+  tot <- rowSums(x)
+  S <- rowSums(x > 0)          #why not specnumber here?
+  nr <- nrow(x)
+  
+  rarefun <- function(i) {
+    cat(paste("rarefying sample", rownames(x)[i]), sep = "/n")
+    n <- seq(1, tot[i], by = step)
+    if (n[length(n)] != tot[i]) {
+      n <- c(n, tot[i])
+    }
+    y <- vegan::rarefy(x[i, ,drop = FALSE], n, se = se)
+    if (nrow(y) != 1) {
+      rownames(y) <- c(".S", ".se")
+      return(data.frame(t(y), Size = n, Sample = rownames(x)[i]))
+    } else {
+      return(data.frame(.S = y[1, ], Size = n, Sample = rownames(x)[i]))
+    }
+  }
+  if (parallel) {
+    out <- parallel::mclapply(seq_len(nr), rarefun, mc.preschedule = FALSE)
+  } else {
+    out <- lapply(seq_len(nr), rarefun)
+  }
+  df <- do.call(rbind, out)
+  
+  # Get sample data
+  if (!is.null(phyloseq::sample_data(physeq_object, FALSE))) {
+    sdf <- methods::as(phyloseq::sample_data(physeq_object), "data.frame")
+    sdf$Sample <- rownames(sdf)
+    data <- merge(df, sdf, by = "Sample")
+    labels <- data.frame(x = tot, y = S, Sample = rownames(x))
+    labels <- merge(labels, sdf, by = "Sample")
+  }
+  
+  # Add, any custom-supplied plot-mapped variables
+  if ( length(color) > 1 ) {
+    data$color <- color
+    names(data)[names(data) == "color"] <- deparse(substitute(color))
+    color <- deparse(substitute(color))
+  }
+  
+  if ( length(label) > 1 ) {
+    labels$label <- label
+    names(labels)[names(labels) == "label"] <- deparse(substitute(label))
+    label <- deparse(substitute(label))
+  }
+  
+  p <- ggplot2::ggplot(data = data,
+                       ggplot2::aes_string(x = "Size",
+                                           y = ".S",
+                                           group = "Sample",
+                                           color = color))
+  
+  p <- p + ggplot2::labs(x = "Sequence Sample Size", y = "Species Richness")
+  
+  if (!is.null(label)) {
+    p <- p + ggplot2::geom_text(data = labels,
+                                ggplot2::aes_string(x = "x",
+                                                    y = "y",
+                                                    label = label,
+                                                    color = color),
+                                size = 4, hjust = 0)
+  }
+  
+  p <- p + ggplot2::geom_line()
+  if (se) { ## add standard error if available
+    p <- p +
+      ggplot2::geom_ribbon(ggplot2::aes_string(ymin = ".S - .se",
+                                               ymax = ".S + .se",
+                                               color = NULL,
+                                               fill = color),
+                           alpha = 0.2)
+  }
+  if (plot) {
+    plot(p)
+  }
+  invisible(p)
+}
+
+
+```
+
+
+
+```{r colors}
+
+  
+exposed_col <- "#F9A620"
+subglacial_col <- "#67a9cf"
+  
+subcat_pal <- c("#fdb462","#386cb0","#7fc97f","#ef3b2c","#984ea3")
+subcat_pal2 <- c("#386cb0","darkorange","#984ea3")
+
+
+```
+
+
+```{r Load the data}
+# Load the final phyloseq object with the correct metadata
+path <- "C:/Users/trine/OneDrive - Danmarks Tekniske Universitet/DTU2/NZ Project 2022/DADA2_Analysis_011221/My_own_ASV_generation/"
+setwd(path)
+getwd()
+
+phy_all <- readRDS("phyloseq_files/physeq_all")
+#otu_table(phy_clean) # it still has the seqs instead of ASV_1, ASV_2, etc...
+
+new.names <- paste0("ASV_", seq(ntaxa(phy_all))) # define new names ASV_1, ASV_2, ...
+seqs <- taxa_names(phy_all) # store sequences
+names(seqs) <- new.names # make map from ASV to full sequence
+taxa_names(phy_all) <- new.names # rename 
+
+data.frame(sample_data(phy_all))
+phy_all
+#seqs["ASV_1"]
+# to convert back to the full sequences use "seqs" e.g. seqs["ASV_"] will return the full sequence that was renamed ASV_1
+
+```
+
+### Sequences and ASVs data
+
+```{r ASVs and reads statistics}
+
+# Since we do not include all samples from the ASV generation we want to filter away those that has count 0
+
+# Inspect number of reads and ASVs
+
+colSums.asv.df <- data.frame(colSums(otu_table(phy_all))) %>%
+  rownames_to_column("ASV")
+
+plot_asvs <- ggplot(colSums.asv.df, aes(x = reorder(ASV, -colSums.otu_table.phy_all..), y = colSums.otu_table.phy_all..)) + 
+  geom_bar(stat = "identity") +
+  ylab("ASV counts") +
+  xlab("ASVs") +
+  theme(#axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+#plot_asvs
+
+# Inspect number of sequences
+
+rowSums.asv.df <- data.frame(rowSums(otu_table(phy_all))) %>%
+  rownames_to_column("Samples")
+
+plot_reads <- ggplot(rowSums.asv.df, aes(x = reorder(Samples, -rowSums.otu_table.phy_all..), y =
+               rowSums.otu_table.phy_all..)) +
+  geom_bar(stat = "identity") + 
+  coord_flip() +
+  ylab("Reads") +
+  xlab("")
+
+summary1 <-
+  list("ASVs" = 
+         list("min" = ~ min(colSums.otu_table.phy_all..),
+            "median" = ~ median(colSums.otu_table.phy_all..),
+            "max"  = ~ max(colSums.otu_table.phy_all..))
+            )
+
+summary_table(colSums.asv.df, summary1)
+
+# colSums.asv.df (N = 2,880)
+# ASVs	  
+#    min	2
+#    median	41
+#    max	125660
+
+summary2 <-
+  list("Reads" = 
+         list("min" = ~ min(rowSums.otu_table.phy_all..),
+            "median" = ~ median(rowSums.otu_table.phy_all..),
+            "max"  = ~ max(rowSums.otu_table.phy_all..))
+            )
+
+summary_table(rowSums.asv.df, summary2)
+
+# rowSums.asv.df (N = 47)
+# Reads	  
+#    min	2462
+#    median	45551
+#    max	105524
+
+```
+
+```{r, fig.width=9, fig.height=5}
+(plot_asvs) | plot_reads
+```
+
+The number of reads varied between 105524 and 2462, with a median value of 45551. 
+Due to the difference between maximum and minimum values we inspected the sequence distribution in each transect separately.
+
+
+```{r ASVs and reads statistics in each transect, fig.height=10, fig.width=16}
+
+# Subset
+
+# TR
+TR <- phy_all %>%
+  subset_samples(Sample_type4 == "Tramway Ridge") %>%
+  prune_taxa(taxa_sums(.) > 0, .)
+TR
+
+# EHS
+EHS <- phy_all %>%
+  subset_samples(Sample_type4 == "Exp Hot Soil") %>%
+  prune_taxa(taxa_sums(.) > 0, .)
+EHS
+
+# subglacial
+SUB<- phy_all %>%
+  subset_samples(Sample_type4 == "Subglacial") %>%
+  prune_taxa(taxa_sums(.) > 0, .)
+SUB
+
+# Create data frames
+
+rowSums.asv.df.TR <- data.frame(rowSums(otu_table(TR))) %>%
+  rownames_to_column("Samples")
+
+rowSums.asv.df.EHS <- data.frame(rowSums(otu_table(EHS))) %>%
+  rownames_to_column("Samples")
+
+rowSums.asv.df.SUB <- data.frame(rowSums(otu_table(SUB))) %>%
+  rownames_to_column("Samples")
+
+
+# Summary
+
+summaryTR <-
+  list("TR" = 
+         list("min" = ~ min(rowSums.otu_table.TR..),
+            "median" = ~ median(rowSums.otu_table.TR..),
+            "max"  = ~ max(rowSums.otu_table.TR..))
+            )
+
+summary_table(rowSums.asv.df.TR, summaryTR)
+
+# rowSums.asv.df.TR (N = 21)
+# TR	  
+#    min	15017
+#    median	47932
+#    max	75143
+
+
+summaryEHS <-
+  list("EHS" = 
+         list("min" = ~ min(rowSums.otu_table.EHS..),
+            "median" = ~ median(rowSums.otu_table.EHS..),
+            "max"  = ~ max(rowSums.otu_table.EHS..))
+            )
+
+summary_table(rowSums.asv.df.EHS, summaryEHS)
+
+# rowSums.asv.df.EHS (N = 17)
+# EHS	  
+#    min	2462
+#    median	40007
+#    max	105524
+
+summarySUB <-
+  list("SUB" = 
+         list("min" = ~ min(rowSums.otu_table.SUB..),
+            "median" = ~ median(rowSums.otu_table.SUB..),
+            "max"  = ~ max(rowSums.otu_table.SUB..))
+            )
+
+summary_table(rowSums.asv.df.SUB, summarySUB)
+# 	rowSums.asv.df.SUB (N = 9)
+# SUB	  
+#    min	20143
+#    median	44097
+#    max	63965
+
+
+plot_reads <- ggplot(rowSums.asv.df, aes(x = reorder(Samples, -rowSums.otu_table.phy_all..), y =
+               rowSums.otu_table.phy_all..)) +
+  geom_bar(stat = "identity") + 
+  coord_flip() +
+  ylab("Reads") +
+  xlab("")
+
+rowSums.asv.df$Sample_type3 <- sample_data(phy_all)$Sample_type3
+rowSums.asv.df$Sample_type4 <- sample_data(phy_all)$Sample_type4
+
+plot_box_read <- ggplot(rowSums.asv.df, aes(fill =Sample_type3, x = Sample_type4, 
+                                            y = rowSums.otu_table.phy_all..)) +
+  geom_boxplot() +
+  xlab("Sample_type4") +
+  ylab("Reads") +
+  scale_fill_manual(values=c(exposed_col,subglacial_col)) +
+  theme_bw() +
+  theme(
+    strip.background = element_blank(),
+    axis.title.x = element_blank (),
+    axis.text.x  = element_text(size=16, angle = 45, hjust = 1, vjust = 1),
+    axis.title.y = element_text(size=16),
+    axis.text.y  = element_text(size=14),
+    legend.position = "none"
+  )
+
+
+#Test that the numbers of reads doesnt change significantly between different groups.
+compare_means(rowSums.otu_table.phy_all.. ~ Sample_type4,  data = rowSums.asv.df)
+
+plot_box_read <- plot_box_read + geom_dotplot(binaxis='y', stackdir='center', dotsize=0.9) + facet_grid(~Sample_type3, scales = "free")
+
+plot_box_read + plot_reads
+
+
+
+```
+
+
+It looks good, with exception of WC that has a sample of 2462 reads. The sample with a lot of reads is a crater mat (105524 reads).
+We will check with filtering if we can retain these samples or not.
+
+### Filtering by taxonomy
+
+```{r Filter by taxonomy, fig.height=10, fig.width=17}
+
+# Filter by taxonomy 
+
+# This taxonomy was obtained with the baysean classifier in DADA2 pipeline using SILVA 138 database
+
+# Show available ranks in the dataset
+rank_names(phy_all)
+
+ # How many domains? (Kingdom in the taxonomy table)
+table(tax_table(phy_all)[, "Kingdom"], exclude = NULL) 
+
+# How many Phyla?
+table(tax_table(phy_all)[, "Phylum"], exclude = NULL) 
+
+# We have a high number of NA Phylum 
+
+# Remove known erroneous assignments
+
+erebusf <- subset_taxa (phy_all, (Kingdom !="Eukaryota")) # we remove Eukaryota and NA
+erebusf <- subset_taxa (erebusf, (Order !="Chloroplast") | is.na(Order)) # we remove Chloroplast but retain NA
+erebusf <- subset_taxa (erebusf, (Family != "Mitochondria") | is.na(Family)) 
+
+erebusf 
+
+# Removing NA Phyla is a common filtering strategy because for such a high taxonomic level it should be possible to derive an affiliation
+# However, since we know that our data set might contain a high number of ASVs not reported in the literature this filtering strategy may not apply
+# We will check the prevalence of NA at the Phylum level
+
+# Compute prevalence of each ASV
+prevdf <- apply(X = otu_table(erebusf),
+               MARGIN = ifelse(taxa_are_rows(erebusf), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+# Add taxonomy and total read counts to this
+prevdf <- data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(erebusf),
+                    tax_table(erebusf))
+
+# Plot prevalence
+prevdf1 <- subset(prevdf, Phylum %in% get_taxa_unique(erebusf, "Phylum"))
+ggplot(prevdf, aes(TotalAbundance, Prevalence / nsamples(erebusf), color = Phylum)) + 
+  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +
+  xlab("Total Abundance") + 
+  ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+
+```
+
+It looks like we loose very abundant ASVs if we filter all the NA Phyla, so for now we will retain this information until we check the similarity of the sampling sites with an ordination.
+
+### Filtering by ASVs
+
+```{r Filter by ASVs}
+
+# As seen before the minimum number of reads for a given ASV in the DADA2 pipeline is 2.
+# Removing these ASVs is a common filtering strategy - they may be a sequencing artifact
+
+# How many ASVs fit this?
+colSums.asv.df.2<- colSums.asv.df %>%
+  filter(colSums.otu_table.phy_all.. < 3)
+
+# Inspect if filtering these ASVs helps to relate one sample to the other (check with a PCoA ordination)
+
+```
+
+
+### Filtering strategies
+
+```{r Filter strategies}
+# Remove ASVs that do not appear more than 2 times 
+seq_flt <- genefilter_sample(erebusf, filterfun_sample(function(x) x > 2))
+
+erebusf2 <- prune_taxa(seq_flt, erebusf) 
+erebusf2
+
+# Filter NA Phylum
+erebusfna <- subset_taxa (erebusf, (Phylum !="NA")) 
+erebusfna
+
+# Combine both filtering strategies
+
+seq_flt_na <- genefilter_sample(erebusfna, filterfun_sample(function(x) x > 2))
+
+erebusfna2 <- prune_taxa(seq_flt_na, erebusfna) #805 ASVs
+erebusfna2
+
+```
+
+
+```{r Normalise}
+
+# Transform data using centered log ratio (clr)
+erebusfr <- microbiome::transform(erebusf, "clr")
+
+erebusfnar<- microbiome::transform(erebusfna, "clr")
+
+erebusf2r<- microbiome::transform(erebusf2, "clr")
+
+erebusfna2r<- microbiome::transform(erebusfna2, "clr")
+
+#tax_table(erebusf)
+#rownames(tax_table(erebusf))
+```
+
+
+```{r Distance}
+
+# Calculate the distance
+unifrac.erebusfr <- phyloseq::distance(erebusfr, method = "unifrac")
+
+unifrac.erebusfnar <- phyloseq::distance(erebusfnar, method = "unifrac")
+
+unifrac.erebusf2r <- phyloseq::distance(erebusf2r, method = "unifrac")
+
+unifrac.erebusfna2r <- phyloseq::distance(erebusfna2r, method = "unifrac")
+
+```
+
+```{r PCoA Ordination, fig.height=14, fig.width=20}
+
+# Get the PCoA ordination
+erebusfr.mds <- ordinate(erebusfr, "MDS", distance = unifrac.erebusfr)
+
+erebusfnar.mds <- ordinate(erebusfnar, "MDS", distance = unifrac.erebusfnar)
+
+erebusf2r.mds <- ordinate(erebusf2r, "MDS", distance = unifrac.erebusf2r)
+
+erebusfna2r.mds <- ordinate(erebusfna2r, "MDS", distance = unifrac.erebusfna2r)
+
+
+# Plot
+
+pcoa.erebusfr<- plot_ordination(erebusfr, erebusfr.mds, 
+                color="Sample_type4", shape = "Sample_type3") +
+  geom_point(size=4) +
+  labs(title = "Filter wrong taxonomy",
+         tag = "PCoA with unifrac distance") + 
+  theme_bw() +# geom_text(aes(label=Name), size=4) +
+  scale_color_manual(values=subcat_pal) 
+
+pcoa.erebusfnar<- plot_ordination(erebusfnar, erebusfnar.mds, 
+                color="Sample_type4", shape = "Sample_type3") +
+  geom_point(size=4) +
+  labs(title = "Filter wrong taxonomy & NA Phyla")+ 
+  theme_bw() +
+  scale_color_manual(values=subcat_pal) 
+  
+pcoa.erebusf2r<- plot_ordination(erebusf2r, erebusf2r.mds, 
+                color="Sample_type4", shape = "Sample_type3") +
+  geom_point(size=4) +
+  labs(title = "Filter wrong taxonomy & ASVs < 2")+ 
+  theme_bw() +
+  scale_color_manual(values=subcat_pal) 
+
+pcoa.erebusfna2r<- plot_ordination(erebusfna2r, erebusfna2r.mds, 
+                color="Sample_type4", shape = "Sample_type3") +
+  geom_point(size=4) +
+  labs(title = "Filter wrong taxonomy & NA Phyla \n& ASVs < 2")+ 
+  theme_bw() +
+  scale_color_manual(values=subcat_pal) 
+
+#(pcoa.erebusfr + pcoa.erebusfnar) / (pcoa.erebusf2r + pcoa.erebusfna2r)
+
+
+```
+
+```{r, fig.height=8.5, fig.width=13}
+fig_pcoa_combined <- (pcoa.erebusfr + theme(legend.position = "none") + pcoa.erebusfnar+theme(legend.position = "none")) / (pcoa.erebusf2r+theme(legend.position = "none") + pcoa.erebusfna2r)
+fig_pcoa_combined
+```
+The different filtering does not seem to influence the beta diversity significantly.
+The ordination explains slightly more variation as we remove ASVs < 2 and NA Phyla but it is not a huge gain. 
+
+
+STEPHEN1: 
+Check if they group based on the field season.
+```{r,fig.height=8, fig.width=13}
+
+subcat_shapes <- c(18,8,17,15,16)
+
+plot_ordination(erebusfr, erebusfr.mds, color="Field.Season", shape = "Sample_type4") + 
+  geom_point(size=7, alpha=0.8) +  
+  #geom_text(aes(label=Name), size=4) + 
+  theme_bw() + 
+  scale_color_manual(values=c("#fdb462", "#386cb0", "hotpink" ,"#ef3b2c" ,"#984ea3","darkorange3")) + scale_shape_manual(values=subcat_shapes) +
+  theme(legend.title = element_text(size=15), 
+        legend.text = element_text(size=13))
+
+
+```
+It does not look like the season play a significant role in the beta diversity.
+
+### Filtering samples with low or high reads
+
+
+Since Western Crater 10 had a very low number of reads and Crater 1 Mat had a very high number of reads, we investigate these samples more.
+We investigate if the rarefaction curve of Western Crater 10 will plateu or if it is a problem that the read number is so low.
+
+```{r, fig.height=8, fig.width=14}
+# ASV matrix rarefaction curve
+library(directlabels)
+
+erebusf
+
+rowSums.asv.df
+sample_data(erebusf)$reads <- rowSums.asv.df$rowSums.otu_table.phy_all..
+
+ASVRareGraph3 <- ggrare(erebusf, color= "reads",step = 200, se = FALSE, plot = FALSE) + geom_line(size=0.5)
+ASVRareGraph3 <- ASVRareGraph3 +
+  theme(plot.title = element_text(size=15), 
+        axis.text = element_text(colour = "black"), 
+        axis.title = element_text(size=15), 
+        panel.border = element_rect(fill = NA), 
+        panel.background = element_rect(fill = 'white', colour = 'white'), 
+        plot.margin = unit(c(1,1,1,1), "cm"), 
+        legend.position = "none",
+        axis.text.x = element_text(size=12), 
+        axis.text.y = element_text(size=12)) + 
+  geom_line(size=0.8) +  geom_dl(aes(label = Name),method = "last.points") + 
+  scale_color_gradient(low="navy", high="red")
+
+WC_10_only <- subset_samples(erebusf, Name == c("WC - 10"))
+ASVRareGraph4 <- ggrare(WC_10_only, step = 50, se = FALSE, color="Name",plot = FALSE) + geom_line(size=0.5)
+ASVRareGraph4 <- ASVRareGraph4 +
+  theme(plot.title = element_text(size=15), 
+        axis.text = element_text(colour = "black"), 
+        axis.title = element_text(size=15), 
+        panel.border = element_rect(fill = NA), 
+        panel.background = element_rect(fill = 'white', colour = 'white'), 
+        plot.margin = unit(c(1,1,1,1), "cm"), 
+        legend.position = "none",
+        axis.text.x = element_text(size=12), 
+        axis.text.y = element_text(size=12)) + 
+  ylim(0,60)+ xlim(0,3000)+
+  geom_line(size=0.8) +  geom_dl(aes(label = Name), method = "last.points") + 
+  scale_color_manual(values= "black")
+
+
+
+ASVRareGraph3 + ASVRareGraph4
+fig_rare_graphs <- ASVRareGraph3 + ASVRareGraph4
+
+```
+It does reach plateau.
+
+Inspect beta diversity without these Western Crater 10 and Crater 1 Mat <br>
+ 
+```{r Removing samples with low number of reads, fig.height=7, fig.width=13}
+
+# Select the samples of interest
+erebusfi <- subset_samples(erebusf, Name != c("WC - 10", "Crater 1 Mat"))
+erebusfi
+
+# Transform the data to relative abundance
+erebusfir<- transform_sample_counts(erebusfi, function(x) x / sum(x) ) 
+
+# Calculate the distance
+unifrac.erebusfir <- phyloseq::distance(erebusfir, method = "unifrac")
+
+# Get the PCoA ordination
+erebusfir.mds <- ordinate(erebusfir, "MDS", distance = unifrac.erebusfir)
+
+# Plot
+pcoa.erebusfir<- plot_ordination(erebusfir, erebusfir.mds, 
+                color="Sample_type4", shape = "Sample_type3") + #, label= "Name"
+    geom_point(size = 7, alpha = 0.7) +
+  scale_color_manual(values=subcat_pal) +
+  theme_bw() +
+  theme( 
+    axis.title.x = element_text(size=16),
+    axis.text.x  = element_text(size=14),
+    axis.title.y = element_text(size=16),
+    axis.text.y  = element_text(size=14))  + ggtitle("Excluding WC - 10 and Crater 1 Mat")+ 
+  guides(shape = guide_legend(title = "Category", order = 1), color=guide_legend(title="Subcategory", order =2))
+    # + geom_text(aes(label = Name),size=4)
+
+pcoa.erebusf2r<- plot_ordination(erebusf2r, erebusf2r.mds, 
+                color="Sample_type4", shape = "Sample_type3") + #, label= "Name"
+    geom_point(size = 7, alpha = 0.7) +
+  scale_color_manual(values=subcat_pal) +
+  theme_bw() +
+  theme( 
+    axis.title.x = element_text(size=16),
+    axis.text.x  = element_text(size=14),
+    axis.title.y = element_text(size=16),
+    axis.text.y  = element_text(size=14), 
+    legend.key.size = unit(1, "cm"), 
+    legend.text = element_text(size=15), legend.title = element_text(size = 18))+ ggtitle("Including WC - 10 and Crater 1 Mat")+ 
+  guides(shape = guide_legend(title = "Category", order =1), color=guide_legend(title="Subcategory", order=2))
+    #+geom_text(aes(label = Name),size=4)
+
+compare_beta <- ggarrange(pcoa.erebusf2r, pcoa.erebusfir, ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+compare_beta
+
+```
+
+```{r,fig.height=8, fig.width=13}
+sup_fig_reads <- ggarrange(plot_reads, plot_box_read, pcoa.erebusf2r, pcoa.erebusfir,
+          labels = c("A","B","C","D"),
+          nrow = 2,
+          ncol = 2
+          )
+sup_fig_reads
+
+# sup_fig_reads <- ggarrange(plot_reads, plot_box_read, compare_beta,
+#           labels = c("A","B","C","D"),
+#           nrow = 1,
+#           ncol = 2
+#           )
+# sup_fig_reads
+```
+
+We will use a conservative approach in the filtering and retain all the samples. 
+The ordination does not explain more variation when we don't use low reads samples, it also does not explain more variation when we filter low abundance ASVs or when we filter Phyla without an assigned taxonomy. <br>
+
+
+STEPHEN2: Should we leave out some of this Western Crater investiation and just cite Noell 2022? On the other hand, there were other ASVs that could be artefacts that I investigated here. I could only find one ASV that look like an artefact (ASV_801) and it doesnt seem to be important soo....
+
+```{r Inspect taxonomy, fig.width=20, fig.height=12 }
+
+# With physeq that was filtered for erroneous taxa and transformed to rel abund - erebusfr
+
+# Transform the physeq object into long format for the purpose of plotting
+erebus_p <- erebusfr %>% psmelt() 
+
+# We don't need all the env data for this, so lets get the col names and select what we want
+colnames(erebus_p)
+
+erebus_p <- erebus_p %>%
+  select(OTU, Sample, Abundance,  Sample_type3, Sample_type4, Temperature, pH, Ca, Kingdom, Phylum, Class, Order, Family, Genus)
+# I retained all the taxonomy in case you want to cahnge the code and inspect other levels
+
+
+# To show NA on our data we must first create a label "NA"
+erebus_p_na<- erebus_p %>%
+  mutate_at("Phylum", ~str_replace_na(., "NA")) %>% # if taxonomy is NA then write "NA"
+  filter(Abundance > 0.01) # we will also filter Rel Abund > 1%, otherwise the plot gets too difficult to read (even like this gets too difficult to read...)
+
+# Now lets check how many Phyla we have
+unique(erebus_p_na$Phylum)
+
+# Since we want to highlight NAs in our data we choose grey #808080 to discriminate
+
+# For Western Crater sites the Rel Abundance of NA was quite high for some sites. Interestingly the site with lowest number of reads WC20 doesn't show NA and the site WC40, also with low number of reads, shows the lowest Rel Abund of NA - this NA result might be because the reads are low
+
+# How are those NA placed in the phylogenetic tree?
+
+# Subset WC from the phyloseq object
+EHSr<- erebusfr %>%
+  subset_samples(Sample_type2== "Western_Crater") %>%
+  prune_taxa(taxa_sums(.) > 0, .) 
+
+plot_tree(EHSr, ladderize="left", color="Phylum")
+
+
+
+
+alltree<- erebusfr %>%
+  #subset_samples(Sample_type4== "subglacial") %>%
+  prune_taxa(taxa_sums(.) > 0, .) 
+
+ptree <- plot_tree(alltree, ladderize="left", color="Phylum", size="abundance", 
+                   label.tips = "OTU") + 
+  ggtitle("Phylogenetic tree of all ASVs to search for artefacts") 
+
+ptree1 <- ptree + theme(legend.text = element_text(size=20), 
+              legend.title = element_text(size=25), 
+              legend.key.width = unit(1, "cm"), 
+              title = element_text(size=30))
+
+# We can see that many of the NA reads are scattered through the Phyla, which means that probably they belong to a known Phylum but the sequence is not in the database and therefore was not assigned
+#HOWEVER: some of them are together and sticks out: these are artefacts! How to remove?
+# Note that this tree in phyloseq is not an appropriate way of showing phylogeny, it is just a quick check
+ptree1
+
+ptree1$data
+
+
+
+```
+Check that the NAs are not artefacts. Maybe yes a few! We never really removed these...
+Check what has been done here in order to label tips on ASV level: https://github.com/joey711/phyloseq/issues/213
+
+```{r, fig.height=80, fig.width=12}
+library(ape)
+treetest <- phy_tree(alltree)
+ape::plot.phylo(treetest)
+
+#ASV 781
+```
+
+
+```{r}
+seqs["ASV_801"] #BLAST did not find any similarities. ASV 801 is likely an artefact
+seqs["ASV_610"] # 100% identical to an archaeon clone. Not an artefact.
+seqs["ASV_631"] # 99.53% identical to a Spirosoma strain. Not an artefact.
+
+
+#interesting group of ASVs
+#985, 231, 782, 859, 591, 871, 456, 552, 550, 793
+# all of these are about 87% similar to any other sequence. Many are 87-86% identical to Uncultured candidate division OP11 bacterium clone from yellow stone national park
+seqs["ASV_985"] 
+seqs["ASV_231"] 
+seqs["ASV_782"]
+seqs["ASV_859"]
+seqs["ASV_591"]
+seqs["ASV_871"]
+seqs["ASV_456"]
+seqs["ASV_552"]
+seqs["ASV_550"]
+seqs["ASV_793"]
+
+```
+It doesnt look like there are many artefacts
+
+
+#HEAT MAPS
+
+```{r, fig.width=26, fig.height=15}
+#Look at the abundance profile of whatever ASVs you want to; I use ASV_34 (Nitrospirota) and Crenarchaeota as an example
+
+#different ways of choosing what to see in the heatmap
+erebus_asv <- erebus_p %>%
+  filter(., Order == "SCGC AB-179-E04" | OTU == "ASV_64" )
+
+erebus_asv <- erebus_p %>%
+  filter(.,  OTU == "ASV_15" )
+
+erebus_asv <- erebus_p %>%
+  filter(., Order == "Frankiales")
+
+erebus_asv$Temperature <- as.factor(erebus_asv$Temperature)
+
+erebus_asv$ASV_Phylum = paste(erebus_asv$Phylum, erebus_asv$OTU)
+
+heatmap_asv <- ggplot(erebus_asv, aes(Temperature, ASV_Phylum)) +
+  geom_tile(aes(fill = Abundance)) +
+  theme_bw() +
+  scale_fill_distiller('CLR \nAbundance', palette = "YlOrRd", direction = 1) +
+  ylab("ASV #") +
+  xlab("Temperature (\u00b0C)") +
+  theme(
+    axis.title.x = element_text (size=16),
+    axis.text.x  = element_text(size=14, angle = 90,
+                                hjust= 1, vjust=0.5),
+    axis.title.y = element_text(size=16),
+    axis.text.y  = element_text(size=10),
+    strip.text.x = element_text(size = 14),
+    legend.text = element_text(size=14),
+    legend.title = element_text(size=14)) +
+  facet_grid(.~Sample_type4, scales = "free")
+
+heatmap_asv
+
+```
+
+```{r,fig.width=26, fig.height=15}
+
+
+erebus_asv <- erebus_p %>%
+  filter(.,  OTU == "ASV_64" )
+
+erebus_asv <- erebus_p %>%
+  filter(.,  OTU == "ASV_65" )
+
+
+erebus_asv$Sample <- as.factor(erebus_asv$Sample)
+
+erebus_asv$ASV_Phylum = paste(erebus_asv$Phylum, erebus_asv$OTU)
+
+heatmap_asv <- ggplot(erebus_asv, aes(Sample, ASV_Phylum)) +
+  geom_tile(aes(fill = Abundance)) +
+  theme_bw() +
+  scale_fill_distiller('CLR \nAbundance', palette = "YlOrRd", direction = 1) +
+  ylab("ASV #") +
+  xlab("Sample") +
+  theme(
+    axis.title.x = element_text (size=16),
+    axis.text.x  = element_text(size=14, angle = 90,
+                                hjust= 1, vjust=0.5),
+    axis.title.y = element_text(size=16),
+    axis.text.y  = element_text(size=10),
+    strip.text.x = element_text(size = 14),
+    legend.text = element_text(size=14),
+    legend.title = element_text(size=14)) +
+  facet_grid(.~Sample_type4, scales = "free")
+
+heatmap_asv
+```
+
+
+Saving most important figures
+
+```{r, fig.height=20, fig.width=16}
+
+pcoa.erebusf2r <- pcoa.erebusf2r# + theme(legend.position = "none")
+
+sup_fig_reads <- ggarrange(plot_reads, plot_box_read,ASVRareGraph3,ASVRareGraph4, pcoa.erebusf2r, pcoa.erebusfir,
+          labels = c("A","B","C","D", "E", "F"),
+          font.label = list(size = 20),
+          nrow = 3,
+          ncol = 2, 
+          common.legend = TRUE
+          )
+sup_fig_reads
+
+
+ggsave(
+  "TBR00_initial_proc_combined.pdf",
+  plot = sup_fig_reads,
+  path = "Saved_plots",
+  width = 16,
+  height = 20,
+  unit = "in",
+  device = "pdf"
+)
+
+```
+
+
+
+
+
+

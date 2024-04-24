@@ -1,0 +1,372 @@
+---
+title: "Microeco_heatmap"
+author: "Trine"
+date: "2023-03-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r Libraries and seed}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation
+library("phyloseq")        # analysis of microbial communities
+library("vegan")           # ecological multivariate analyses
+library("microbiome") #for analyzing phyloseq objects
+library("viridis") #color package
+library("svglite") #for saving SVGs
+library("ggpubr") #for saving plots
+library("here")            # set the path to the folder
+library("ggplot2")
+library("microeco")
+library("file2meco")
+library("agricolae")
+library(cowplot)
+library(here)
+
+set.seed(57)
+```
+
+
+
+
+```{r read_phyloseq}
+
+# WHEN YOU OPEN THIS FILE ----
+phy_all <- readRDS("phyloseq_files/physeq_all")
+
+#otu_table(phy_all) # it still has the seqs instead of ASV_1, ASV_2, etc...
+
+new.names <- paste0("ASV_", seq(ntaxa(phy_all))) # define new names ASV_1, ASV_2, ...
+seqs <- taxa_names(phy_all) # store sequences
+names(seqs) <- new.names # make map from ASV to full sequence
+taxa_names(phy_all) <- new.names # rename 
+phy_all
+
+initial_ntaxa <- ntaxa(phy_all)
+
+#Clean 
+phy_all <- subset_taxa (phy_all, (Kingdom !="Eukaryota"))
+phy_all <- subset_taxa (phy_all, (Order !="Chloroplast") | is.na(Order))    
+phy_all <- subset_taxa (phy_all, (Family != "Mitochondria") | is.na(Family))
+cat("\n")
+cat("\nInitial number of taxa: ", initial_ntaxa)
+cat("\nNumber of taxa excluding eukaryotes, chloroplast and mitochondrial seqs: ", ntaxa(phy_all))
+cat("\nDifference: ", initial_ntaxa - ntaxa(phy_all))
+
+phy_all
+```
+```{r}
+#Load version of physeq object, with contaminants removed but not normalized
+volcsf <- phy_all
+```
+
+
+```{r}
+#get all of the data ready to go into the microeco world
+envdata <- data.frame(sample_data(volcsf))
+
+#want to include ASV as a taxonomic rank
+tax_table <- data.frame(tax_table(volcsf)) %>%
+  rownames_to_column(., var = "ASV_original") %>%
+  dplyr::mutate(., ASV = ASV_original) %>%
+  column_to_rownames(., var = "ASV_original")
+tax_table
+
+#transform phyloseq to microeco object
+volcsf_meco <- phyloseq2meco(volcsf)
+
+volcsf_meco$sample_table <- envdata #if you need to modify the envdata as I did
+volcsf_meco$tax_table <- tax_table
+```
+
+
+```{r, fig.height=8, fig.width=25}
+pro.func <- trans_func$new(dataset = volcsf_meco)
+pro.func$for_what <- "prok"
+pro.func$cal_spe_func(prok_database = c("FAPROTAX"))
+
+pro.func$cal_spe_func_perc(abundance_weighted = FALSE)
+
+pro.func$res_spe_func_perc
+
+save <- pro.func$plot_spe_func_perc() #+
+  #facet_grid(~ pro.func$sample_table$Sample_type3, scales = "free")
+```
+
+```{r,fig.height=8, fig.width=25}
+save 
+
+#The percentages of the OTUs having the same trait can reflect the functional redundancy of this function in the community.
+
+```
+
+
+
+```{r}
+# If you want to change the group list, reset the list t2$func_group_list
+pro.func$func_group_list
+pro.func$show_prok_func("methanotrophy")
+
+```
+
+
+```{r}
+volcsf_meco$sample_table <- envdata #if you need to modify the envdata as I did
+volcsf_meco$tax_table <- tax_table
+```
+
+
+Makes most sense when looking at sample type 3 (exposed/subglacial). Here it is obvious that the photosyntrophy differs between the groups which makes perfectly sense. Then also, the aerobic ammonia oxidation (probably the archaea in the exposed sites) and nitrification. Then also methaneotophy, methyltrophy, anaerobic chemoheterotrophy, hydrocarbon degradation, dark sulfide oxidation, nonphotosynthetic cyanobacteria!!!! Must be in the caves as I saw in my thesis. 
+
+
+```{r, fig.height=6.5,fig.width=7}
+envdata_f <- envdata[,c("Sample_type3", "Temperature", "pH", "Conductivity", "GWC", "Carbon", "Nitrogen", "Cd", "Mn", "Mg", "Ca", "Sr", "U", "Pb")]
+
+envdata_f2 <- envdata_f %>%
+  dplyr::mutate(Sample_type3 = ifelse(Sample_type3 == "Subglacial", 0, ifelse(Sample_type3 == "Exposed", 1, Sample_type3)))
+
+envdata_f2$Sample_type3 <- as.numeric(envdata_f2$Sample_type3)
+
+t3 <- trans_env$new(dataset = volcsf_meco, add_data = envdata_f2)
+t3$cal_cor(add_abund_table = pro.func$res_spe_func_perc, cor_method = "spearman",
+           p_adjust_method = "BH", p_adjust_type = "All")
+t3$plot_cor(pheatmap = TRUE)
+t3$plot_cor(pheatmap = TRUE,filter_feature = c(""))
+
+```
+
+
+```{r, fig.height=5.5,fig.width=8}
+
+t3_tab <- t3$res_cor
+
+
+t3_tab_sig <- t3_tab[t3_tab$AdjPvalue < 0.05, ]
+t3_tab_sig
+
+t3_tab_sig2 <- t3_tab %>%
+  mutate(Correlation2 = case_when(
+      AdjPvalue >= 0.05 ~ NA,
+      TRUE ~ Correlation)) %>%
+  dplyr::filter(Taxa != "ureolysis") %>%
+  dplyr::filter(Taxa != "plastic_degradation") %>%
+  dplyr::filter(!str_detect(Taxa, "human_")) %>%
+  dplyr::filter(Taxa != "cellulolysis") %>%
+  dplyr::filter(!str_detect(Taxa, "arsenate")) %>%
+  dplyr::filter(!str_detect(Taxa, "parasite")) %>%
+  dplyr::filter(!str_detect(Taxa, "aromatic")) %>%
+  dplyr::filter(!str_detect(Taxa, "hydrocarbon")) %>%
+  dplyr::filter(Env != "Sample_type3") %>%
+  dplyr::filter(Env != "V")
+
+#t3$res_cor[ which(t3$res_cor$Taxa == c("methanotrophy", "methanol_oxidation", "nitrification")),]
+
+func_heat1 <- ggplot(t3_tab_sig2, aes(Env, Taxa, fill= Correlation2)) + 
+  geom_tile() + theme_bw() +
+  scale_fill_gradient(low = "navy", high = "red", na.value="white",
+                      name = "Correlation") +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5,hjust=1),
+        legend.position = "bottom",
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        panel.grid = element_blank())
+
+func_heat1
+
+t3_tab_sig3 <- t3_tab %>%
+  dplyr::mutate(Correlation2 = case_when(
+      AdjPvalue >= 0.05 ~ NA,
+      TRUE ~ Correlation)) %>%
+  dplyr::filter(Taxa != "ureolysis") %>%
+  dplyr::filter(Taxa != "plastic_degradation") %>%
+  dplyr::filter(!str_detect(Taxa, "human_")) %>%
+  dplyr::filter(Taxa != "cellulolysis") %>%
+  dplyr::filter(!str_detect(Taxa, "arsenate")) %>%
+  dplyr::filter(!str_detect(Taxa, "parasite")) %>%
+  dplyr::filter(!str_detect(Taxa, "aromatic")) %>%
+  dplyr::filter(!str_detect(Taxa, "hydrocarbon")) %>%
+  dplyr::filter(Env == "Sample_type3")
+
+t3_tab_sig3
+
+t3_tab_sig3$Env <- as.character(t3_tab_sig3$Env)
+
+t3_tab_sig3[t3_tab_sig3 == "Sample_type3"] <- "Sample Category"
+
+func_heat2 <- ggplot(t3_tab_sig3, aes(Env, Taxa, fill= Correlation2)) + 
+  geom_tile() + theme_bw() +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5,hjust=1),
+        legend.position = "bottom",
+        axis.title.x = element_blank(),
+        panel.grid = element_blank()) +
+  ylab("Functional Category") + 
+  scale_fill_gradient(high = "#F9A620", low = "#67a9cf", na.value="white",
+                      breaks=c(-0.8, 0.8), name = "",
+                      limits=c(-0.8, 0.8), labels=c("Subg.","Exp."))
+
+func_heat2
+
+pp <- list(func_heat2, func_heat1)
+func_heatf <- cowplot::plot_grid(plotlist=pp, ncol=2, align='h')
+func_heatf
+
+ggsave("functional_heatmap2.svg",
+       func_heatf, width = 180, height = 180, units = "mm", dpi = 300)
+
+```
+
+
+# Explore data further
+
+What are the ASVs responsible for the significant profiles?
+
+
+```{r}
+
+tab_test <- pro.func$res_spe_func
+
+
+
+rowSums(tab_test["ASV_1",]) # The most abundant Crenarchiota ASV has no assigned functions
+rowSums(tab_test["ASV_2",]) # 0
+rowSums(tab_test["ASV_3",]) # 0
+rowSums(tab_test["ASV_4",]) # 0
+rowSums(tab_test["ASV_5",]) # 1 ! Proteo
+rowSums(tab_test["ASV_6",]) # 2 ! Cyanobacteria
+rowSums(tab_test["ASV_7",]) # 0
+rowSums(tab_test["ASV_8",]) # The most abundant WPS ASV has no assigned functions
+rowSums(tab_test["ASV_9",]) # The most abundant Chloroflexi
+rowSums(tab_test["ASV_10",]) # 2 Cyanobacteria
+rowSums(tab_test["ASV_11",]) # 0
+rowSums(tab_test["ASV_12",]) # 1 Cyanobacteria
+rowSums(tab_test["ASV_13",]) # 0: Acido
+rowSums(tab_test["ASV_14",]) # 0: ACido
+rowSums(tab_test["ASV_15",]) # The most abundant Actinobacteria has no function assigned
+rowSums(tab_test["ASV_16",]) # The most abundant GAL15 has no function assigned
+
+```
+
+
+```{r}
+# Use this code to find the ASVs responsible for a certain functional profile that correlate significantly with any of the investigated environmental factors and/or sample type
+
+subset_rows <- tab_test[tab_test$methylotrophy == 1, ]
+subset_rows
+```
+
+
+```{r}
+phy_all_trans <- transform_sample_counts(phy_all, function(x) x / sum(x))
+
+
+```
+
+
+How many ASVs could be assigned a function?
+
+```{r}
+# Count the number of rows with at least one 1 in any column
+num_rows_with_1 <- sum(apply(tab_test, 1, function(row) any(row == 1)))
+num_rows_with_1
+
+num_rows_with_1
+668/2734*100
+# 24.43307 % could be assigned a function
+
+tab_test_no_zeros <- tab_test[rowSums(tab_test != 0) > 0, ]
+tab_test_no_zeros
+
+
+```
+
+How much does these ASVs constitute of the samples?
+
+```{r}
+# Assume 'physeq' is your original phyloseq object
+# Specify the ASV names you want to keep in a vector
+selected_asvs <- rownames(tab_test_no_zeros)
+
+
+# Subset the phyloseq object to include only specific ASVs with known function
+physeq_subset <- subset_taxa(phy_all_trans, taxa_names(phy_all_trans) %in% selected_asvs)
+physeq_subset
+
+```
+```{r, fig.height=10, fig.width=10}
+
+erebus_p_physeq_subset <- physeq_subset %>% psmelt() 
+
+erebus_p_physeq_subset$Phylum[is.na(erebus_p_physeq_subset$Phylum)] = "Unassigned"
+
+# Plot 
+plot_physeq_subset<- ggplot(erebus_p_physeq_subset, aes(x = Name, y = Abundance, fill = Phylum)) +
+  geom_bar(stat = "identity") +theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 16),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.x  = element_text(size=16, vjust = 0.5, hjust = 1, angle = 90),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=16),
+    axis.title.y = element_text(size=16),
+    plot.title = element_text(size=20, hjust = -0.05),
+    legend.text = element_text(size=15), 
+    legend.title = element_text(size=15, angle = 90),
+    legend.position = "bottom") +
+  coord_cartesian(expand = FALSE)
+
+plot_physeq_subset <- plot_physeq_subset + facet_grid(~Sample_type4, scales = "free", space = "free")
+
+#plot_Class$data$Sample_type3 <- factor(plot_Class$data$Sample_type3, levels = c("Subglacial", "Exposed"))
+plot_physeq_subset$data$Sample_type4 <- factor(plot_physeq_subset$data$Sample_type4, levels = c("Subglacial", "Exp Hot Soil", "Western Crater", "Tramway Ridge"))
+
+plot_physeq_subset
+
+```
+
+Calculate how much these ASVs comprise the communities to get exact numbers and averages
+
+```{r}
+data_abund <- plot_physeq_subset$data
+
+data_abund
+
+#Calculate how much the ASVs with known function constitute in the samples on average across the whole dataset
+
+sum(data_abund$Abundance)/47*100   # 21.83749
+
+#Calculate averages from each group
+library(reshape2)
+melted_data <- melt(data_abund,  id.vars= "Sample_type4" , measure.vars= "Abundance", variable_name = "Sample")
+
+melted_data_subglacial <- melted_data[which(melted_data$Sample_type4 == "Subglacial"),]
+melted_data_exp <- melted_data[which(melted_data$Sample_type4 == "Exp Hot Soil"),]
+melted_data_TR <- melted_data[which(melted_data$Sample_type4 == "Tramway Ridge"),]
+
+sum(melted_data_subglacial$value)/9*100 #24.85584
+sum(melted_data_exp$value)/17*100 #19.75987
+sum(melted_data_TR$value)/21*100 #22.2258
+
+#Calculate the sum of the sample with least ASVs with known function
+melted_data_low <- data_abund[which(data_abund$Sample == "Exp Hot Soil 7"),]
+melted_data_low
+sum(melted_data_low$Abundance)*100   #4% !!!!
+
+```
+
+
+
+
+
+```{r}
+plot_physeq_subset$data
+```
+
+

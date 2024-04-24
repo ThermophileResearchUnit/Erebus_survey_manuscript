@@ -1,0 +1,435 @@
+---
+title: "18s DADA2 pipeline"
+author: "Stephen Noell"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                     message = FALSE, 
+                      warning = FALSE)
+```
+
+```{r}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation
+library("here")            # set the path to the folder
+library("ggplot2")
+library("ggpubr") #for putting figs together
+library("RColorBrewer") #for color palettes
+library("svglite") #for saving SVGs
+library("dada2")
+library("ShortRead")
+library("Biostrings")
+library("dplyr")
+library("phyloseq")
+library(tidyr)
+library(DECIPHER)
+library(readr)
+library(phangorn)
+library(seqinr)
+
+set.seed(57)
+
+path <- "G:/My Drive/Research/Projects/Erebus - microbial survey paper/Eukaryote sequencing/18S analysis"
+
+```
+
+```{r}
+#Check for primers left in sequences
+fnFs <- sort(list.files(path, pattern = "_R1_001.fastq.gz", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern = "_R2_001.fastq.gz", full.names = TRUE))
+
+FWD <- "GTACACACCGCCCGTC"
+REV <- "TGATCCTTCTGCAGGTTCACCTAC"
+
+allOrients <- function(primer) {
+    # Create all orientations of the input sequence
+    require(Biostrings)
+    dna <- DNAString(primer)  # The Biostrings works w/ DNAString objects rather than character vectors
+    orients <- c(Forward = dna, Complement = Biostrings::complement(dna), Reverse = reverse(dna), 
+        RevComp = reverseComplement(dna))
+    return(sapply(orients, toString))  # Convert back to character vector
+}
+FWD.orients <- allOrients(FWD)
+REV.orients <- allOrients(REV)
+FWD.orients
+
+fnFs.filtN <- file.path(path, "filtN", basename(fnFs)) # Put N-filterd files in filtN/ subdirectory
+fnRs.filtN <- file.path(path, "filtN", basename(fnRs))
+filterAndTrim(fnFs, fnFs.filtN, fnRs, fnRs.filtN, maxN = 0, multithread = TRUE)
+
+primerH18s <- function(primer, fn) {
+    # Counts number of reads in which the primer is found
+    nh18s <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE)
+    return(sum(nh18s > 0))
+}
+
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerH18s, fn = fnFs.filtN[[1]]), 
+    FWD.ReverseReads = sapply(FWD.orients, primerH18s, fn = fnRs.filtN[[1]]), 
+    REV.ForwardReads = sapply(REV.orients, primerH18s, fn = fnFs.filtN[[1]]), 
+    REV.ReverseReads = sapply(REV.orients, primerH18s, fn = fnRs.filtN[[1]]))
+
+path.cut <- file.path(path, "cutadapt")
+if(!dir.exists(path.cut)) dir.create(path.cut)
+
+```
+
+```{r}
+
+#####Put in cut sequence files from NESI into the new cutadapt folder
+
+fnFs.cut <- sort(list.files(path.cut, pattern = "trim_1.fastq.gz", full.names = TRUE))
+fnRs.cut <- sort(list.files(path.cut, pattern = "trim_2.fastq.gz", full.names = TRUE))
+
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerH18s, fn = fnFs.cut[[2]]), 
+    FWD.ReverseReads = sapply(FWD.orients, primerH18s, fn = fnRs.cut[[2]]), 
+    REV.ForwardReads = sapply(REV.orients, primerH18s, fn = fnFs.cut[[2]]), 
+    REV.ReverseReads = sapply(REV.orients, primerH18s, fn = fnRs.cut[[2]]))
+
+cutFs <- sort(list.files(path.cut, pattern = "_1.fastq.gz", full.names = TRUE))
+cutRs <- sort(list.files(path.cut, pattern = "_2.fastq.gz", full.names = TRUE))
+
+# Extract sample names, assuming filenames have format:
+get.sample.name <- function(fname) strsplit(basename(fname), "_")[[1]][1]
+sample.names <- unname(sapply(cutFs, get.sample.name))
+sample.names
+```
+
+```{r}
+#filter and trim
+filtFs <- file.path(path.cut, "filtered", basename(cutFs))
+filtRs <- file.path(path.cut, "filtered", basename(cutRs))
+
+out <- filterAndTrim(cutFs, filtFs, cutRs, filtRs, maxN = 0, maxEE = c(3,5), 
+    truncQ = 2, rm.phix = TRUE, compress = TRUE, multithread = FALSE)  # on windows, set multithread = FALSE
+
+out
+
+out.v2 <- out %>%
+  as.data.frame(.) %>%
+  mutate(., percent = reads.out/reads.in) %>%
+  summarise(average = mean(percent))
+
+out.v2
+
+#
+
+errF <- learnErrors(filtFs, multithread = TRUE)
+errR <- learnErrors(filtRs, multithread = TRUE)
+
+plotErrors(errF, nominalQ = TRUE)
+#do the dots follow the black line?
+```
+
+```{r}
+#Dereplicate, inference, merge paired
+derepFs <- derepFastq(filtFs, verbose = TRUE)
+derepRs <- derepFastq(filtRs, verbose = TRUE)
+
+# Name the derep-class objects by the sample names
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+
+#sample inference
+dadaFs <- dada(derepFs, err = errF, multithread = TRUE)
+dadaRs <- dada(derepRs, err = errR, multithread = TRUE)
+
+#merge paired reads
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE)
+
+#construct sequence table
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+
+#remove chimeras
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+table(nchar(getSequences(seqtab.nochim)))
+```
+
+```{r}
+#track reads
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, 
+    getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace
+# sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", 
+    "nonchim")
+rownames(track) <- sample.names
+track
+write.csv(track, "18s_track.csv")
+#
+
+```
+
+```{r}
+#taxonomy assignment - saving to run on NESI
+#save(seqtab.nochim, file="seqtab_nochim_18s")
+```
+
+```{r}
+#re-load sample names if needed
+path.cut <- file.path(path, "cutadapt")
+cutFs <- sort(list.files(path.cut, pattern = "_1.fastq.gz", full.names = TRUE))
+get.sample.name <- function(fname) strsplit(basename(fname), "_")[[1]][1]
+sample.names <- unname(sapply(cutFs, get.sample.name))
+sample.names
+
+taxa.print <- taxa.silva  # Removing sequence rownames for display only
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
+
+
+```{r}
+#load("taxa_18s_unite")
+load("taxa_18s_silva")
+load("seqtab_nochim_18s")
+
+#write.csv(taxa.silva, "taxa_18s_silva.csv")
+
+# Saving the sequences from the taxa.silva table into a separate object, then changing the row names to numbers
+
+taxa.silva.2 <- data.frame(taxa.silva) %>%
+  rownames_to_column(., var="seq")
+
+seqs_taxa_18s <- taxa.silva.2$seq
+
+name.seq.18s <- paste0("ASV", seq(nrow(taxa.silva.2)))
+
+taxa.silva.2$asv <- name.seq.18s
+
+taxa.silva.f <- taxa.silva.2 %>%
+  select(., -seq) %>%
+  column_to_rownames(., var="asv") %>%
+  dplyr::rename(., "Strain" = "NA.") %>%
+  as.matrix(.)
+
+```
+
+```{r}
+#do the same thing on the seqtable
+
+seqtab.nochim.2 <- data.frame(t(seqtab.nochim)) %>%
+  rownames_to_column(., var="seq")
+
+seqs_seqtab <- seqtab.nochim.2$seq
+
+seqtab.nochim.2$asv <- name.seq.18s
+
+seqtab.nochim.3 <- seqtab.nochim.2 %>%
+  select(., -seq) %>%
+  column_to_rownames(., var="asv")
+
+# for some annoying reason, the process of transposing etc. changes - to . in the sample names
+# need to change this back
+  
+seqtab.nochim.4 <- data.frame(t(seqtab.nochim.3)) %>%
+  rownames_to_column(., var="bad_samples") %>%
+  select(., -bad_samples)
+
+seqtab.nochim.4$real_samples <- sample.names
+
+seqtab.nochim.5 <- seqtab.nochim.4 %>%
+  column_to_rownames(., var="real_samples")
+
+seqtab.nochim.f <- as.matrix(seqtab.nochim.5)
+```
+
+
+
+```{r}
+#Phyloseq handoff - initial
+envdata_18s <- read.csv("18s_env_data_all.csv", header = TRUE, row.names = 1)
+
+ps_18s_silva_nonf <- phyloseq(otu_table(seqtab.nochim.f, taxa_are_rows=FALSE), 
+               sample_data(envdata_18s), 
+               tax_table(taxa.silva.f))
+```
+
+```{r}
+#Need to reduce ASV fasta down to just the NA at phylum level for BLASTing on command line
+taxa_18s_na <- data.frame(taxa.silva.f) %>%
+  rownames_to_column(., var="asvs") %>%
+  filter(., is.na(Phylum)) %>%
+  select(., asvs, Phylum)
+
+#create table with ASV# in one column and sequence in the other
+asv_frame_18s <- do.call(rbind, Map(data.frame, asvs=name.seq.18s, seq=seqs_seqtab))
+
+#filter this to only keep NA ASVs
+asv_18s_na <- asv_frame_18s %>%
+  inner_join(., taxa_18s_na, by = "asvs") %>%
+  select(., -Phylum)
+
+#write.fasta(as.list(asv_18s_na$seq), as.list(asv_18s_na$asvs), "seqs_18s_na.fasta")
+
+```
+
+
+```{r}
+# Read in the list of ASVs with their kingdom
+asv_18s_blasted_0 <- read.csv("18s_all_blasted.csv")
+
+# Also need to add to this list of bad ASVs the ASVs that had no significant similarity to anything in NCBI nt database, as I decided to remove these
+asv_18s_blasted <- asv_18s_na %>%
+  full_join(.,asv_18s_blasted_0, by = "asvs") %>%
+  replace_na(list(kingdom = 'TRUE')) %>%
+  dplyr::filter(., kingdom != "Eukaryota") %>%
+  select(., asvs)
+
+# Remove these bad ASVs from the total list of ASVs to generate the list of ASVs to keep
+asv_18s_good <- data.frame(asv_frame_18s) %>%
+  anti_join(., asv_18s_blasted, by="asvs") %>%
+  select(., asvs)
+
+# Also get the sequences for these final ASVs for the phylogenetic tree
+asv_18s_good_seqs <- data.frame(asv_frame_18s) %>%
+  anti_join(., asv_18s_blasted, by="asvs") %>%
+  select(., asvs, seq)
+
+
+# prune the phyloseq object to only keep the good asvs
+asv_18s_blast_vect <- dplyr::pull(asv_18s_good, asvs)
+ps_18s_all_cont <- prune_taxa(asv_18s_blast_vect, ps_18s_silva_nonf)
+ps_18s_all_cont
+
+# How many kingdoms left?
+table(tax_table(ps_18s_all_cont)[, "Kingdom"], exclude = NULL) 
+
+# How many Phyla?
+table(tax_table(ps_18s_all_cont)[, "Phylum"], exclude = NULL)
+
+# Results in 700 ASVs, about 100 unassigned at the phylum level
+
+```
+
+
+```{r}
+# Tree ----
+# Get the sequences for aligning
+seqs0 <- getSequences(asv_18s_good_seqs$seq)
+names(seqs0) <- asv_18s_good_seqs$asvs
+
+seqs0.df <- data.frame(asv = names(seqs0), sequence = seqs0, stringsAsFactors = FALSE)
+
+# Save sequences for running tree construction on NESI
+#save(seqs0, file = "seqs_18s")
+load("seqs_18s")
+
+# Align sequences (using DECIPHER)
+#alignment <- AlignSeqs(DNAStringSet(seqs0), anchor = NA,verbose = FALSE)
+
+# Build a tree (using phangorn)
+#phangAlign <- phyDat(as(alignment, "matrix"), type = "DNA")
+#dm <- dist.ml(phangAlign)
+#treeNJ <- NJ(dm) 
+#fit = pml(treeNJ, data=phangAlign)
+#fitGTR_18s_f <- update(fit, k=4, inv=0.2)
+#fitGTR_18s_f <- optim.pml(fitGTR_18s_f, model="GTR", optInv=TRUE, optGamma=TRUE,
+                  #  rearrangement = "stochastic", control = pml.control(trace = 0))
+
+fitGTR_18s_f <- readRDS("fitGTR_18s_f")
+
+```
+
+
+```{r}
+#make phyloseq object
+
+ps18s_fs_nof_all <- phyloseq(otu_table(ps_18s_all_cont), 
+               sample_data(ps_18s_all_cont), 
+               tax_table(ps_18s_all_cont),
+                phy_tree(fitGTR_18s_f$tree))
+
+saveRDS(ps18s_fs_nof_all, "physeq_18s_silva_all")
+
+ps18s_fs_nof_all <- readRDS("physeq_18s_silva_all")
+
+#subset 18S to remove fungi, 77 removed
+ps18s_fs_nof <- subset_taxa(ps18s_fs_nof_all, Order != "Fungi" | is.na(Order))
+
+nof <- data.frame(otu_table(ps18s_fs_nof))
+nof_sum <- rowSums(nof)
+write.csv(nof_sum, "18s_fungi_removed.csv")
+
+#which ASVs were dropped?
+fung_drop <- as.data.frame(tax_table(ps18s_fs_nof_all)) %>%
+  dplyr::filter(Order == "Fungi") %>%
+  rownames_to_column(var = "asv") %>%
+  dplyr::select(asv)
+  
+```
+
+
+```{r}
+#BLASTed all ASVs from this analysis to make sure we don't have any non-euk contaminants
+
+#ps18s_fs_nof <- readRDS("ps_18s_silva_nof_all")
+
+blast_all <- read.csv("18s_all_blasted_v2.csv") %>%
+  dplyr::filter(., kingdom == "Bacteria")
+
+bad_asvs <- blast_all$asvs
+
+#rename ASVs
+new.names <- paste0("ASV_18S_", seq(ntaxa(ps18s_fs_nof))) # define new names
+seqs <- taxa_names(ps18s_fs_nof) # store old names
+names(seqs) <- new.names # make map from ASV to full sequence
+taxa_names(ps18s_fs_nof) <- new.names # rename 
+
+#prune phyloseq object
+ps18s_fs_nof_fin <- prune_taxa(!taxa_names(ps18s_fs_nof) %in% bad_asvs, ps18s_fs_nof)
+
+```
+
+
+```{r}
+#rename ASVs
+new.names <- paste0("ASV_18S_", seq(ntaxa(ps18s_fs_nof_fin))) # define new names
+seqs <- taxa_names(ps18s_fs_nof_fin) # store old names
+names(seqs) <- new.names # make map from ASV to full sequence
+taxa_names(ps18s_fs_nof_fin) <- new.names # rename 
+
+saveRDS(ps18s_fs_nof_fin, "ps_18s_silva_nof_all")
+```
+
+
+```{r}
+#separate into two papers
+ps_18s_erebus_silva <- prune_samples(sample_data(ps18s_fs_nof_fin)$Site != "Melbourne", 
+                                     ps18s_fs_nof_fin) # Remove Mel and Ritt samples
+ps_18s_erebus_silva <- prune_samples(sample_data(ps_18s_erebus_silva)$Site != "Rittmann", ps_18s_erebus_silva)
+
+saveRDS(ps_18s_erebus_silva, "physeq_18s_erebus_silva")
+
+physeq_18s_erebus_silva<- readRDS("physeq_18s_erebus_silva")
+nobad <- data.frame(otu_table(physeq_18s_erebus_silva))
+nobad_sum <- rowSums(nobad)
+write.csv(nobad_sum, "18s_bad_removed.csv")
+
+#separate volcano paper data
+ps_18s_volcs_silva <- prune_samples(sample_data(ps18s_fs_nof_fin)$Site != "Side crater", 
+                                    ps18s_fs_nof_fin)
+ps_18s_volcs_silva <- prune_samples(sample_data(ps_18s_volcs_silva)$Exposure != "Subglacial", ps_18s_volcs_silva)
+ps_18s_volcs_silva <- prune_samples(sample_names(ps_18s_volcs_silva) != "ERB-1A-18s", ps_18s_volcs_silva)
+
+saveRDS(ps_18s_volcs_silva, "physeq_18s_volcs_silva")
+```
+
+```{r}
+# Create a fasta table
+seqs <- read.csv("seqs_all.csv")
+
+blast_bad <- read.csv("18s_all_blasted_v2.csv") %>%
+  dplyr::filter(kingdom == "Bacteria")
+
+fin <- anti_join(seqs, blast_bad, by = "asvs")
+new.names <- paste0("ASV_18S_", seq(nrow(fin))) # define new names
+fin$asvs <- new.names
+
+#write.fasta(as.list(fin$sequence), as.list(fin$asvs), "uniqueSeqs_18s_f_nof_fin_2.fasta")
+```

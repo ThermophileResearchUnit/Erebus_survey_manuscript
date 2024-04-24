@@ -1,0 +1,590 @@
+---
+title: "test"
+author: "Trine"
+date: "2024-04-13"
+output: html_document
+---
+
+
+
+#---------------------Tutorial: https://github.com/joey711/phyloseq/issues/143
+
+
+#---------------------My own data
+
+```{r read_phyloseq}
+
+library(here)
+
+# WHEN YOU OPEN THIS FILE ----
+phy_all <- readRDS("phyloseq_files/physeq_all")
+
+#otu_table(phy_all) # it still has the seqs instead of ASV_1, ASV_2, etc...
+
+new.names <- paste0("ASV_", seq(ntaxa(phy_all))) # define new names ASV_1, ASV_2, ...
+seqs <- taxa_names(phy_all) # store sequences
+names(seqs) <- new.names # make map from ASV to full sequence
+taxa_names(phy_all) <- new.names # rename 
+phy_all
+
+initial_ntaxa <- ntaxa(phy_all)
+
+#Clean 
+phy_all <- subset_taxa (phy_all, (Kingdom !="Eukaryota"))
+phy_all <- subset_taxa (phy_all, (Order !="Chloroplast") | is.na(Order))    
+phy_all <- subset_taxa (phy_all, (Family != "Mitochondria") | is.na(Family))
+cat("\n")
+cat("\nInitial number of taxa: ", initial_ntaxa)
+cat("\nNumber of taxa excluding eukaryotes, chloroplast and mitochondrial seqs: ", ntaxa(phy_all))
+cat("\nDifference: ", initial_ntaxa - ntaxa(phy_all))
+```
+
+```{r}
+psdata <- phy_all
+psdata
+sample_sums(psdata)
+
+sample_data(psdata)
+rownames(sample_data(psdata))
+sample_names(psdata) <- c( "X1",  "X2",  "X3",  "X4",  
+   "X5", "X6",  "X7",  "X8"  ,
+   "X9",  "X10", "X11", "X12" ,
+   "X13", "X14", "X15", "X16" ,
+   "X17", "X18", "X20", "X21" ,
+   "X22", "X23", "X24", "X25" ,
+   "X26", "X27", "X28", "X29" ,
+   "X30", "X31", "X32", "X33" ,
+   "X34", "X35", "X36", "X38" ,
+   "X42", "X47", "X50", "X54" ,
+   "X55", "X57", "X58", "X61" ,
+   "X62", "X63", "X64")
+
+rownames(sample_data(psdata))
+
+
+
+
+#rownames(sample_data(psdata)) <- 
+#   
+#   c("Warren.Cave","X22.Blue","Exp.Hot.Soil.2","Helo.Cave","Harry.s.Dream.Vent", 
+#     "TR_OS1...55","Exp.Hot.Soil.6","TR1...62", "TR_OS1...15","Exp.Hot.Soil.7","Crater.6.low",
+#     "OS3","TR_OS1...45","TR_OS1...25","TR_OS1","TR_OS1...35",       
+#     "TR_OS1...5","TR_OS1...65","TR.ERB.1A...65","TR2...44","Crater8..3cm.",
+#     "Ice.Cave","WC...30","TR.ERB.3A...65"    ,
+#     "Sub.Hot.Soil.8","TR1...52","TR1...42","Hubert.s.Nightmare", "Harry.s.Dream",
+#     "Crater1.0.1cm","Crater2.0.4.cm","TR2...24"  ,     "WC...50","WC...40","WC...35",
+#     "TR1...32","ERB.Crater.1","Crater.2.Mat","WC...10","Crater.1.Mat" ,   
+#     "TR.Mat.7A","TR.Mat.1A","TR.Mat.9A","Hut.Cave","Crater.9B","WC...20","TR2...34")
+
+
+#unique(rarefaction_curve_data$Sample)
+ 
+
+
+
+
+```
+
+
+```{r, warning=FALSE}
+set.seed(42)
+
+calculate_rarefaction_curves <- function(psdata, measures, depths) {
+  require('plyr') # ldply
+  require('reshape2') # melt
+
+  estimate_rarified_richness <- function(psdata, measures, depth) {
+    if(max(sample_sums(psdata)) < depth) return()
+    psdata <- prune_samples(sample_sums(psdata) >= depth, psdata)
+
+    rarified_psdata <- rarefy_even_depth(psdata, depth, verbose = FALSE)
+
+    alpha_diversity <- estimate_richness(rarified_psdata, measures = measures)
+
+    # as.matrix forces the use of melt.array, which includes the Sample names (rownames)
+    molten_alpha_diversity <- melt(as.matrix(alpha_diversity), varnames = c('Sample', 'Measure'), value.name = 'Alpha_diversity')
+
+    molten_alpha_diversity
+  }
+
+  names(depths) <- depths # this enables automatic addition of the Depth to the output by ldply
+  rarefaction_curve_data <- ldply(depths, estimate_rarified_richness, psdata = psdata, measures = measures, .id = 'Depth', .progress = ifelse(interactive(), 'text', 'none'))
+
+  # convert Depth from factor to numeric
+  rarefaction_curve_data$Depth <- as.numeric(levels(rarefaction_curve_data$Depth))[rarefaction_curve_data$Depth]
+
+  rarefaction_curve_data
+}
+
+rarefaction_curve_data <- calculate_rarefaction_curves(psdata, c('Observed', 'Shannon'), rep(c(1, 10, 100, 200,300,400, 500,600,700, 1000,1500,2000,2100,2200,2300,2400,2500, 3000, 4000, 1:300 * 10000), each = 20))
+summary(rarefaction_curve_data)
+
+```
+
+
+
+```{r}
+
+
+rarefaction_curve_data_summary <- ddply(rarefaction_curve_data, c('Depth', 'Sample', 'Measure'), summarise, Alpha_diversity_mean = mean(value), Alpha_diversity_sd = sd(value))
+
+unique(rarefaction_curve_data$Sample)
+unique(rownames(sample_data(psdata)))
+```
+
+
+
+```{r}
+rarefaction_curve_data_summary_verbose <- merge(rarefaction_curve_data_summary, data.frame(sample_data(psdata)), by.x = 'Sample', by.y = 'row.names')
+```
+
+
+
+```{r, fig.height=6, fig.width=14}
+library('ggplot2')
+
+
+ pal_barnf <- c(
+   "#3288BD",   "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD",
+ "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD",
+ "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD",
+ "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "red", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD", "#3288BD","#3288BD","#3288BD")
+ 
+ 
+
+rarecurve_plots <- ggplot(
+  data = rarefaction_curve_data_summary_verbose,
+  mapping = aes(
+    x = Depth,
+    y = Alpha_diversity_mean,
+    ymin = Alpha_diversity_mean - Alpha_diversity_sd,
+    ymax = Alpha_diversity_mean + Alpha_diversity_sd,
+    colour = Name,
+    group = Sample
+  )) + geom_line(size=0.8) + geom_pointrange(size=0.1) + facet_wrap(  facets = ~ Measure,  scales = 'free_y') + scale_color_manual(values=pal_barnf)
+
+rarecurve_plots_save <- rarecurve_plots + theme_light() + theme(axis.text.x =  element_text(size=13),
+        axis.title.x = element_text(size=14, margin = margin(t = 20)),
+        axis.text.y = element_text(size=10),
+        strip.background = element_rect(
+     color="#333433", fill="white", size=0.3, linetype="solid"), 
+     strip.text.x = element_text(
+        size = 13, color = "#333433", face = "bold")) + xlab("No. of reads")
+
+rarecurve_plots_save
+
+ggsave("Saved_plots/TBR08_rarecurve_plots_save.pdf",
+       rarecurve_plots_save,
+       width = 14,
+       height = 6,
+       device = "pdf")
+
+```
+
+
+```{r}
+rarefaction_curve_data <- calculate_rarefaction_curves(psdata, c('Shannon'), rep(c(1, 10, 100, 200,300,400, 500,600,700, 1000,1500,2000,2100,2200,2300,2400,2500, 3000, 4000, 1:300 * 10000), each = 20))
+summary(rarefaction_curve_data)
+```
+
+
+
+
+
+```{r}
+
+
+rarefaction_curve_data_summary <- ddply(rarefaction_curve_data, c('Depth', 'Sample', 'Measure'), summarise, Alpha_diversity_mean = mean(value), Alpha_diversity_sd = sd(value))
+
+unique(rarefaction_curve_data$Sample)
+
+unique(rownames(sample_data(psdata)))
+
+```
+
+
+
+```{r}
+rarefaction_curve_data_summary_verbose <- merge(rarefaction_curve_data_summary, data.frame(sample_data(psdata)), by.x = 'Sample', by.y = 'row.names')
+```
+
+
+
+```{r, fig.height=7, fig.width=12}
+library('ggplot2')
+
+exposed_col <- "#F9A620"
+subglacial_col <- "#67a9cf" 
+
+
+rarecurve_plots <- ggplot(
+  data = rarefaction_curve_data_summary_verbose,
+  mapping = aes(
+    x = Depth,
+    y = Alpha_diversity_mean,
+    ymin = Alpha_diversity_mean - Alpha_diversity_sd,
+    ymax = Alpha_diversity_mean + Alpha_diversity_sd,
+    colour = Sample_type3,
+    group = Sample
+  )) + geom_line(size=0.8) + geom_pointrange(size=0.3) + facet_wrap(  facets = ~Name,  scales = 'free_y') + ylim(0,5) + scale_color_manual(values=c(exposed_col, subglacial_col))
+
+rarecurve_plots
+
+
+rarecurve_plots_save_split <- rarecurve_plots + theme_light() + theme(
+  axis.text.x =  element_text(size=8),
+        axis.title.x = element_text(size=10, margin = margin(t = 20)),
+        axis.text.y = element_text(size=8),
+        strip.background = element_rect(
+     color="#333433", fill="white", size=0.3, linetype="solid"), 
+     strip.text.x = element_text(
+        size = 10, color = "#333433", face = "bold"))+ xlab("No. of reads")
+
+
+rarecurve_plots_save_split
+
+
+ggsave("Saved_plots/TBR08_rarecurve_plots_save_split.pdf",
+       rarecurve_plots_save_split,
+       width = 12,
+       height = 7,
+       device = "pdf")
+
+
+
+```
+
+
+```{r}
+
+test_WC10 <- subset_samples(psdata,sample_data(psdata)$Name =="WC - 10")
+sample_data(test_WC10)
+
+```
+
+```{r, warning=FALSE}
+
+rarefaction_curve_data <- calculate_rarefaction_curves(test_WC10, c('Shannon'), rep(c(1, 10, 100, 200,300,400, 500,600,700, 1000,1500,2000,2100,2200,2300,2400,2500, 3000, 4000), each = 100))
+summary(rarefaction_curve_data)
+
+```
+
+
+
+
+```{r}
+
+rarefaction_curve_data_summary <- ddply(rarefaction_curve_data, c('Depth', 'Sample', 'Measure'), summarise, Alpha_diversity_mean = mean(value), Alpha_diversity_sd = sd(value))
+
+rarefaction_curve_data_summary
+rarefaction_curve_data_summary$Sample <- "X50"
+```
+
+
+
+```{r}
+
+rarefaction_curve_data_summary_verbose <- merge(rarefaction_curve_data_summary, data.frame(sample_data(test_WC10)), by.x = 'Sample', by.y = 'row.names')
+
+rarefaction_curve_data_summary
+```
+
+
+
+```{r, fig.height=6, fig.width=6}
+
+library('ggplot2')
+
+rarecurve_plots <- ggplot(
+  data = rarefaction_curve_data_summary_verbose,
+  mapping = aes(
+    x = Depth,
+    y = Alpha_diversity_mean,
+    ymin = Alpha_diversity_mean - Alpha_diversity_sd,
+    ymax = Alpha_diversity_mean + Alpha_diversity_sd,
+    colour = Name,
+  )) + geom_line(size=0.8) + geom_pointrange(size=0.3) #facet_wrap(  facets = Name~ Measure,  scales = 'free_y') + scale_color_manual(values=pal_barnf)
+
+
+rarecurveplots_WC10 <- rarecurve_plots + theme_light()+ xlab("No. of reads")
+
+rarecurveplots_WC10
+
+
+ggsave("Saved_plots/TBR08_rarecurveplots_WC10.pdf",
+       rarecurveplots_WC10,
+       width = 6,
+       height = 6,
+       device = "pdf")
+
+
+```
+
+
+
+
+
+
+```{r, fig.height=4, fig.width=6}
+
+# Assuming you have already loaded and processed your phyloseq object, let's say it's called "physeq_obj"
+
+# Load required packages
+library(phyloseq)
+library(ggplot2)
+library(ggpubr)
+set.seed(57)
+
+# 1. Extract alpha diversity (Shannon index) values
+alpha_div <- estimate_richness(phy_all, measures = "Shannon")
+
+# 2. Extract sequencing depth
+sample_size <- sample_sums(phy_all)
+
+# Combine alpha diversity and sequencing depth into a data frame
+data <- data.frame(Alpha_Diversity = alpha_div$Shannon, Sample_Size = sample_size)
+
+# 3. Create point plot
+ShannonVsReads <- ggplot(data, aes(x = Sample_Size, y = Alpha_Diversity)) +
+  geom_point() +
+  labs(x = "No. of reads", y = "Alpha Diversity (Shannon Index)") +
+  theme_bw() + geom_smooth(method = "lm") +  # Add linear regression curve without confidence interval
+  stat_cor(method = "pearson", label.x = 1, label.y = 4.9, size = 4, label.sep = ", ") + 
+  ggtitle("Alpha diversity as function of number of reads, prokaryotes")
+
+ShannonVsReads
+
+data2 <- data %>%
+  rownames_to_column(var = "Sample")
+  
+data3 <- data2 %>%
+  dplyr::mutate(Subcategory = dplyr::case_when(
+    startsWith(Sample, "WC") ~ "Exp. Hot Soil",
+    startsWith(Sample, "TR") ~ "Tramway Ridge",
+    startsWith(Sample, "Crater") ~ "Exp. Hot Soil",
+    startsWith(Sample, "ERB") ~ "Tramway Ridge",
+    startsWith(Sample, "Harry's") ~ "Subglacial",
+    startsWith(Sample, "Helo") ~ "Subglacial",
+    startsWith(Sample, "Warren") ~ "Subglacial",
+    startsWith(Sample, "Hut") ~ "Subglacial",
+    startsWith(Sample, "Hubert's") ~ "Subglacial",
+    startsWith(Sample, "Ice") ~ "Subglacial",
+    startsWith(Sample, "Sub") ~ "Subglacial",
+    startsWith(Sample, "OS") ~ "Tramway Ridge",
+    startsWith(Sample, "Exp") ~ "Exp. Hot Soil",
+    startsWith(Sample, "22") ~ "Subglacial"
+  ))
+
+ShannonVsReads.sub <- ggplot(data3, aes(x = Sample_Size, y = Alpha_Diversity)) +
+  geom_point() +
+  labs(x = "No. of reads", y = "Alpha Diversity (Shannon Index)") +
+  theme_bw() + geom_smooth(method = "lm") +  # Add linear regression curve without confidence interval
+  stat_cor(method = "pearson", label.x = 1, label.y = 4.9, size = 4, label.sep = ", ") + 
+  facet_wrap(. ~ Subcategory, scales = "free")
+
+ShannonVsReads_all <- ggarrange(ShannonVsReads, ShannonVsReads.sub,
+                                nrow = 2,
+                                labels = c("A", "B"))
+
+
+ggsave("Saved_plots/TBR08_ShannonVsReads.pdf",
+       ShannonVsReads_all,
+       width = 6,
+       height = 6,
+       device = "pdf")
+
+################### Rarefy to even depth
+phy_all.r <- rarefy_even_depth(phy_all, sample.size = 14000, replace = FALSE, trimOTUs = TRUE)
+
+# 1. Extract alpha diversity (Shannon index) values
+alpha_div.r <- estimate_richness(phy_all.r, measures = "Shannon")
+
+alpha_div.r$Rarefied <- "Yes"
+alpha_div$Rarefied <- "No"
+
+alpha_div <- alpha_div[!(rownames(alpha_div) == "WC - 10"), ]
+
+alpha_div.r <- alpha_div.r %>%
+  rownames_to_column(var = "Sample")
+
+alpha_div <- alpha_div %>%
+  rownames_to_column(var = "Sample")
+
+alpha_div.b <- rbind(alpha_div, alpha_div.r)
+
+alpha_div.plot <- ggplot(alpha_div.b, aes(x = Sample, y = Shannon, color = Rarefied)) +
+  geom_point() +
+  theme_bw() +
+  scale_x_discrete(guide = guide_axis(angle = 90))
+
+alpha_div.plot
+
+ggsave("Saved_plots/TBR08_alpha_diversity_rarefied.pdf",
+       alpha_div.plot,
+       width = 8,
+       height = 4,
+       device = "pdf")
+```
+
+```{r}
+#Read count is the number of reads that map to a sequence. Depth is the average number of reads covering each reference base, often calculated by (#bp mapped to sequence)/(sequence length)
+alpha_div <- estimate_richness(phy_all, measures = "Shannon")
+
+# 2. Extract sequencing depth
+seq_depth <- sample_sums(phy_all)/390
+
+# Combine alpha diversity and sequencing depth into a data frame
+data <- data.frame(Alpha_Diversity = alpha_div$Shannon, Seq_Depth = seq_depth)
+
+# 3. Create point plot
+point_plot <- ggplot(data, aes(x = Seq_Depth, y = Alpha_Diversity)) +
+  geom_point() +
+  labs(x = "Sequencing Depth", y = "Alpha Diversity (Shannon Index)") +
+  theme_minimal()
+
+# Show the plot
+#point_plot +   geom_smooth(method = "lm") +
+ # stat_cor(method = "pearson", label.x = 0.9, label.y = 0.1, size = 4, aes(label = paste(..rr.label.., ..p.label.., sep = ", ")))
+ 
+
+# Add linear regression curve without confidence interval
+
+point_plot + geom_smooth(method = "lm") +  # Add linear regression curve without confidence interval
+  stat_cor(method = "pearson", label.x = 1, label.y = 4.9, size = 4, label.sep = ", ") + ggtitle("Alpha diversity as function of sequence depth")
+
+
+
+
+```
+
+
+
+```{r, fig.height=4, fig.width=6}
+###Fungi
+phy_its <- readRDS("phyloseq_files/physeq_its_erebus.cont")
+
+# 1. Extract alpha diversity (Shannon index) values
+alpha_div <- estimate_richness(phy_its, measures = "Shannon")
+
+# 2. Extract sequencing depth
+sample_size <- sample_sums(phy_its)
+
+# Combine alpha diversity and sequencing depth into a data frame
+data <- data.frame(Alpha_Diversity = alpha_div$Shannon, Sample_Size = sample_size)
+
+# 3. Create point plot
+ShannonVsReads <- ggplot(data, aes(x = Sample_Size, y = Alpha_Diversity)) +
+  geom_point() +
+  labs(x = "No. of reads", y = "Alpha Diversity (Shannon Index)") +
+  theme_bw() + geom_smooth(method = "lm") +  # Add linear regression curve without confidence interval
+  stat_cor(method = "pearson", label.x = 1, label.y = 4.9, size = 4, label.sep = ", ") + 
+  ggtitle("Alpha diversity as function of number of reads, fungi")
+
+ShannonVsReads
+
+data2 <- data %>%
+  rownames_to_column(var = "Sample")
+  
+data3 <- data2 %>%
+  dplyr::mutate(Subcategory = dplyr::case_when(
+    startsWith(Sample, "WC") ~ "Exp. Hot Soil",
+    startsWith(Sample, "TR") ~ "Tramway Ridge",
+    startsWith(Sample, "Crater") ~ "Exp. Hot Soil",
+    startsWith(Sample, "ERB") ~ "Tramway Ridge",
+    startsWith(Sample, "Harrys") ~ "Subglacial",
+    startsWith(Sample, "Helocave") ~ "Subglacial",
+    startsWith(Sample, "Warren") ~ "Subglacial",
+    startsWith(Sample, "Hut") ~ "Subglacial",
+    startsWith(Sample, "Huberts") ~ "Subglacial",
+    startsWith(Sample, "Ice") ~ "Subglacial",
+    startsWith(Sample, "Sub") ~ "Subglacial",
+    startsWith(Sample, "OS") ~ "Tramway Ridge",
+    startsWith(Sample, "Exp") ~ "Exp. Hot Soil",
+    startsWith(Sample, "22") ~ "Subglacial"
+  ))
+
+ShannonVsReads.sub <- ggplot(data3, aes(x = Sample_Size, y = Alpha_Diversity)) +
+  geom_point() +
+  labs(x = "No. of reads", y = "Alpha Diversity (Shannon Index)") +
+  theme_bw() + geom_smooth(method = "lm") +  # Add linear regression curve without confidence interval
+  stat_cor(method = "pearson", label.x = 1, label.y = 4.9, size = 4, label.sep = ", ") + 
+  facet_wrap(. ~ Subcategory, scales = "free")
+
+ShannonVsReads_all.its <- ggarrange(ShannonVsReads, ShannonVsReads.sub,
+                                nrow = 2,
+                                labels = c("A", "B"))
+
+ShannonVsReads_all.its
+
+ggsave("Saved_plots/TBR08_ShannonVsReads_fungi.pdf",
+       ShannonVsReads_all.its,
+       width = 6,
+       height = 6,
+       device = "pdf")
+
+```
+
+
+```{r, fig.height=4, fig.width=6}
+phy_18s <- readRDS("phyloseq_files/physeq_18s_erebus_silva_nof_fin.cont")
+
+# 1. Extract alpha diversity (Shannon index) values
+alpha_div <- estimate_richness(phy_18s, measures = "Shannon")
+
+# 2. Extract sequencing depth
+sample_size <- sample_sums(phy_18s)
+
+# Combine alpha diversity and sequencing depth into a data frame
+data <- data.frame(Alpha_Diversity = alpha_div$Shannon, Sample_Size = sample_size)
+
+# 3. Create point plot
+ShannonVsReads <- ggplot(data, aes(x = Sample_Size, y = Alpha_Diversity)) +
+  geom_point() +
+  labs(x = "No. of reads", y = "Alpha Diversity (Shannon Index)") +
+  theme_bw() + geom_smooth(method = "lm") +  # Add linear regression curve without confidence interval
+  stat_cor(method = "pearson", label.x = 1, label.y = 4.9, size = 4, label.sep = ", ") + 
+  ggtitle("Alpha diversity as function of number of reads, eukaryotes")
+
+ShannonVsReads
+
+data2 <- data %>%
+  rownames_to_column(var = "Sample")
+  
+data3 <- data2 %>%
+  dplyr::mutate(Subcategory = dplyr::case_when(
+    startsWith(Sample, "WC") ~ "Exp. Hot Soil",
+    startsWith(Sample, "TR") ~ "Tramway Ridge",
+    startsWith(Sample, "Crater") ~ "Exp. Hot Soil",
+    startsWith(Sample, "ERB") ~ "Tramway Ridge",
+    startsWith(Sample, "Harrys") ~ "Subglacial",
+    startsWith(Sample, "Helocave") ~ "Subglacial",
+    startsWith(Sample, "Warren") ~ "Subglacial",
+    startsWith(Sample, "Hut") ~ "Subglacial",
+    startsWith(Sample, "Huberts") ~ "Subglacial",
+    startsWith(Sample, "Ice") ~ "Subglacial",
+    startsWith(Sample, "Sub") ~ "Subglacial",
+    startsWith(Sample, "OS") ~ "Tramway Ridge",
+    startsWith(Sample, "Exp") ~ "Exp. Hot Soil",
+    startsWith(Sample, "22") ~ "Subglacial"
+  ))
+
+ShannonVsReads.sub <- ggplot(data3, aes(x = Sample_Size, y = Alpha_Diversity)) +
+  geom_point() +
+  labs(x = "No. of reads", y = "Alpha Diversity (Shannon Index)") +
+  theme_bw() + geom_smooth(method = "lm") +  # Add linear regression curve without confidence interval
+  stat_cor(method = "pearson", label.x = 1, label.y = 4.9, size = 4, label.sep = ", ") + 
+  facet_wrap(. ~ Subcategory, scales = "free")
+
+ShannonVsReads_all.euks <- ggarrange(ShannonVsReads, ShannonVsReads.sub,
+                                nrow = 2,
+                                labels = c("A", "B"))
+
+ShannonVsReads_all.euks
+
+ggsave("Saved_plots/TBR08_ShannonVsReads_euks.pdf",
+       ShannonVsReads_all.euks,
+       width = 6,
+       height = 6,
+       device = "pdf")
+
+```

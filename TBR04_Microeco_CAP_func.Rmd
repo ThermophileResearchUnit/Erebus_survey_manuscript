@@ -1,0 +1,265 @@
+---
+title: "Testmicroeco"
+author: "Trine"
+date: "2023-03-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Libraries and seed}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation
+library("phyloseq")        # analysis of microbial communities
+library("vegan")           # ecological multivariate analyses
+library("microbiome") #for analyzing phyloseq objects
+library("viridis") #color package
+library("svglite") #for saving SVGs
+library("ggpubr") #for saving plots
+library("here")            # set the path to the folder
+library("ggplot2")
+library("microeco")
+library("file2meco")
+library("agricolae")
+library("here")
+set.seed(57)
+```
+
+```{r read_phyloseq}
+
+
+# WHEN YOU OPEN THIS FILE ----
+phy_clean <- readRDS("phyloseq_files/physeq_clean")
+
+#otu_table(phy_clean) # it still has the seqs instead of ASV_1, ASV_2, etc...
+
+new.names <- paste0("ASV_", seq(ntaxa(phy_clean))) # define new names ASV_1, ASV_2, ...
+seqs <- taxa_names(phy_clean) # store sequences
+names(seqs) <- new.names # make map from ASV to full sequence
+taxa_names(phy_clean) <- new.names # rename 
+phy_clean
+
+initial_ntaxa <- ntaxa(phy_clean)
+
+#Clean 
+phy_clean <- subset_taxa (phy_clean, (Kingdom !="Eukaryota"))
+phy_clean <- subset_taxa (phy_clean, (Order !="Chloroplast") | is.na(Order))    
+phy_clean <- subset_taxa (phy_clean, (Family != "Mitochondria") | is.na(Family))
+cat("\n")
+cat("\nInitial number of taxa: ", initial_ntaxa)
+cat("\nNumber of taxa excluding eukaryotes, chloroplast and mitochondrial seqs: ", ntaxa(phy_clean))
+cat("\nDifference: ", initial_ntaxa - ntaxa(phy_clean))
+```
+
+```{r}
+#Load version of physeq object, with contaminants removed but not normalized
+volcsf <- phy_clean
+```
+
+
+```{r}
+#get all of the data ready to go into the microeco world
+envdata <- data.frame(sample_data(volcsf))
+
+#want to include ASV as a taxonomic rank
+tax_table <- data.frame(tax_table(volcsf)) %>%
+  rownames_to_column(., var = "ASV_original") %>%
+  dplyr::mutate(., ASV = ASV_original) %>%
+  column_to_rownames(., var = "ASV_original")
+tax_table
+
+#transform phyloseq to microeco object
+volcsf_meco <- phyloseq2meco(volcsf)
+# 414 taxa are removed from the otu_table, as the abundance is 0 ...
+
+volcsf_meco$sample_table <- envdata #if you need to modify the envdata as I did
+volcsf_meco$tax_table <- tax_table
+```
+
+
+
+```{r}
+t1 <- trans_env$new(dataset=volcsf_meco, add_data = envdata)
+```
+
+
+```{r}
+new_test <- clone(volcsf_meco)
+new_test$sample_table <- data.frame(new_test$sample_table, env_data_16S[rownames(new_test$sample_table), ])
+# now new_test$sample_table has the whole data
+new_test
+```
+```{r}
+envdata_filt_all <- na.omit(envdata[,10:37][,-4])
+```
+
+
+
+```{r, fig.height=7, fig.width=9}
+
+t1 <- trans_env$new(dataset = new_test, add_data = envdata_filt_all )
+
+t1$cal_ordination(method = "dbRDA", use_measure = "bray")
+# t1$res_rda is the result list stored in the object
+t1$trans_ordination(adjust_arrow_length = TRUE, max_perc_env = 1.5)
+# t1$res_rda_trans is the transformed result for plotting
+t1$plot_ordination(plot_color = "Sample_type3")
+t1$plot_ordination(plot_color = "Sample_type4", add_sample_label = "Name")
+
+```
+
+```{r}
+t1$cal_mantel(method = "spearman", use_measure = "bray", p_adjust_method = "BH")
+mantel_all <- t1$res_mantel
+
+envdata_noSrMg <- envdata_filt_all %>% dplyr::select(-Mg, -Sr)
+envdata_noSrCa <- envdata_filt_all %>% dplyr::select(-Ca, -Sr)
+envdata_noN <- envdata_filt_all %>% dplyr::select(-Nitrogen)
+envdata_noC <- envdata_filt_all %>% dplyr::select(-Carbon)
+
+t1.Ca <- trans_env$new(dataset = new_test, add_data = envdata_noSrMg)
+t1.Ca$cal_ordination(method = "dbRDA", use_measure = "bray")
+t1.Ca$cal_mantel(method = "spearman", use_measure = "bray", p_adjust_method = "BH")
+noSrMg <- t1.Ca$res_mantel
+
+t1.Mg <- trans_env$new(dataset = new_test, add_data = envdata_noSrCa)
+t1.Mg$cal_ordination(method = "dbRDA", use_measure = "bray")
+t1.Mg$cal_mantel(method = "spearman", use_measure = "bray", p_adjust_method = "BH")
+noSrCa <- t1.Mg$res_mantel
+
+t1.C <- trans_env$new(dataset = new_test, add_data = envdata_noN)
+t1.C$cal_ordination(method = "dbRDA", use_measure = "bray")
+t1.C$cal_mantel(method = "spearman", use_measure = "bray", p_adjust_method = "BH")
+noN <- t1.C$res_mantel
+
+t1.N <- trans_env$new(dataset = new_test, add_data = envdata_noC)
+t1.N$cal_ordination(method = "dbRDA", use_measure = "bray")
+t1.N$cal_mantel(method = "spearman", use_measure = "bray", p_adjust_method = "BH")
+noC <- t1.N$res_mantel
+
+mantel_all2 <- rbind(mantel_all, noSrMg, noSrCa, noN, noC)
+write.csv(mantel_all2, file = "Mantel_results_all.csv")
+```
+
+```{r}
+envdata_filt_mantel <- envdata_filt_all[,c("Ca", "Temperature", "GWC", "Nitrogen", "Carbon", "Conductivity", "pH")]
+
+t1 <- trans_env$new(dataset = new_test, add_data = envdata_filt_mantel )
+
+t1$cal_ordination(method = "dbRDA", use_measure = "bray")
+# t1$res_rda is the result list stored in the object
+t1$trans_ordination(adjust_arrow_length = TRUE, max_perc_env = 1.5)
+# t1$res_rda_trans is the transformed result for plotting
+
+
+subcat_pal <- c("darkorange2","#386cb0","#7fc97f")
+
+
+CAP_env <- t1$plot_ordination(plot_color = "Sample_type4", plot_shape = "Sample_type3", point_size = 4) + scale_color_manual(values=subcat_pal)+ 
+  theme(legend.text = element_text(size=11.5), 
+        legend.title = element_text(size=13))+ 
+  guides(shape = guide_legend(title="Category", order =1), color=guide_legend(title="Subcategory", order=2))
+
+  
+CAP_env_text <- t1$plot_ordination(plot_color = "Sample_type4", plot_shape = "Sample_type3", point_size = 4, add_sample_label = "Name")+ scale_color_manual(values=subcat_pal)+ 
+   theme(legend.text = element_text(size=11.5), 
+        legend.title = element_text(size=13))+ 
+  guides(shape = guide_legend(title="Category", order =1), color=guide_legend(title="Subcategory", order=2))
+
+CAP_env 
+CAP_env_text
+
+
+ggsave(
+  "TBR04_CAP_env.pdf",
+  plot = CAP_env,
+  path = "Saved_plots/",
+  device = "pdf",
+  width = 8,
+  height = 5,
+)
+```
+
+```{r}
+t1$cal_ordination_envfit()
+
+t1$res_ordination_envfit
+
+```
+
+Finding correlations between taxa and environmental factors
+Phylum Level
+
+```{r, fig.height=17, fig.width=15}
+t1$cal_ordination(method = "RDA", taxa_level = "Phylum")
+# As the main results of RDA are related with the projection and angles between different arrows,
+# we adjust the length of the arrow to show them clearly using several parameters.
+
+t1$res_ordination_R2
+
+t1$trans_ordination(show_taxa = 10, adjust_arrow_length = TRUE, max_perc_env = 1.5, max_perc_tax = 1.5, min_perc_env = 0.2, min_perc_tax = 0.2)
+
+t1$res_ordination_trans
+# t1$res_rda_trans is the transformed result for plotting
+t1$plot_ordination(plot_color = "Sample_type4", add_sample_label = "Name") 
+
+
+```
+
+```{r, fig.height=10, fig.width=15}
+t1$plot_ordination(plot_color = "Sample_type4", add_sample_label = "Name") + scale_color_manual(values=subcat_pal)
+
+CAP_Phylum <- t1$plot_ordination(plot_color = "Sample_type4", plot_shape = "Sample_type3", point_size = 4) + scale_color_manual(values=subcat_pal) + 
+  theme(legend.text = element_text(size=11.5), 
+        legend.title = element_text(size=13))+ 
+  guides(shape = guide_legend(title = "Category"), color=guide_legend(title="Subcategory"))
+CAP_Phylum
+
+
+ggsave(
+  "TBR04_CAP_Phylum.pdf",
+  plot = CAP_Phylum,
+  path = "Saved_plots/",
+  device = "pdf",
+  width = 8,
+  height = 5,
+)
+
+
+```
+
+
+
+
+
+```{r}
+
+t1 <- trans_env$new(dataset = new_test, add_data = envdata_filt_mantel )
+
+t1$cal_cor(use_data = "Phylum", p_adjust_method = "BH", p_adjust_type = "All", cor_method = "spearman")
+tab <- t1$res_cor
+tab[!is.na(tab$Significance) & tab$Significance != "", ]
+
+phylum_env_sig <- t1$plot_cor(filter_feature = c(""))
+phylum_env_sig
+
+
+ggsave(
+  "TBR04_phylum_env_sig.pdf",
+  plot = phylum_env_sig,
+  path = "Saved_plots/",
+  device = "pdf",
+  width = 8,
+  height = 5,
+)
+
+```
+
+
+
+
+
+

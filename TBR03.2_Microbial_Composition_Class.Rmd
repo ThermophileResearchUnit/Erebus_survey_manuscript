@@ -1,0 +1,515 @@
+---
+title: "Class abundance"
+author: "Trine"
+date: "2023-07-05"
+output: html_document
+---
+
+## Analysis of microbial community
+```{r}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation
+library("phyloseq")        # analysis of microbial communities
+library("patchwork")       # plots together
+library("here")            # set the path to the folder
+library("ggplot2")
+library("ggpubr") #for putting figs together
+library("RColorBrewer") #for color palettes
+library("svglite") #for saving SVGs
+library(here)
+library("svglite") #for saving SVGs
+
+set.seed(57)
+```
+
+
+```{r read_phyloseq}
+path <- "C:/Users/trine/OneDrive - Danmarks Tekniske Universitet/DTU2/NZ Project 2022/DADA2_Analysis_011221/My_own_ASV_generation/Publication_scripts/"
+
+# WHEN YOU OPEN THIS FILE ----
+phy_all <- readRDS("phyloseq_files/physeq_all")
+
+#otu_table(phy_all) # it still has the seqs instead of ASV_1, ASV_2, etc...
+
+new.names <- paste0("ASV_", seq(ntaxa(phy_all))) # define new names ASV_1, ASV_2, ...
+seqs <- taxa_names(phy_all) # store sequences
+names(seqs) <- new.names # make map from ASV to full sequence
+taxa_names(phy_all) <- new.names # rename 
+phy_all
+
+initial_ntaxa <- ntaxa(phy_all)
+
+#Clean 
+phy_all <- subset_taxa (phy_all, (Kingdom !="Eukaryota"))
+phy_all <- subset_taxa (phy_all, (Order !="Chloroplast") | is.na(Order))    
+phy_all <- subset_taxa (phy_all, (Family != "Mitochondria") | is.na(Family))
+cat("\n")
+cat("\nInitial number of taxa: ", initial_ntaxa)
+cat("\nNumber of taxa excluding eukaryotes, chloroplast and mitochondrial seqs: ", ntaxa(phy_all))
+cat("\nDifference: ", initial_ntaxa - ntaxa(phy_all))
+```
+
+
+#### Fig Stacked Barplot
+```{r, fig.width=20, fig.height=11}
+phy_all_trans <- transform_sample_counts(phy_all, function(x) x / sum(x))
+
+# Data for plotting
+erebus_p <- phy_all_trans %>% psmelt() 
+```
+
+```{r, fig.width=20, fig.height=11}
+## Class
+
+ pal_barnf <- c(
+   "black",   "#9E0142", "#D53E4F", "#F46D43", "#FDAE61", "#FEE08B", "#FFFFBF", "#E6F598", "#ABDDA4", "#66C2A5", "#3288BD", "#5E4FA2",
+ "#8E0152", "#C51B7D", "#DE77AE", "#F1B6DA", "#FDE0EF", "#E6F5D0", "#B8E186", "#7FBC41", "#4D9221", "#276419", "#40004B",
+ "#762A83", "#9970AB", "#C2A5CF", "#E7D4E8", "#F7F7F7", "#D9F0D3", "#A6DBA0", "#5AAE61", "#1B7837", "#00441B", "#543005", "#8C510A",
+ "#BF812D", "#DFC27D", "#F6E8C3", "#C7EAE5", "#80CDC1", "#35978F", "#01665E", "#003C30", "#636363")
+
+erebus_p["Class"][which(erebus_p$Abundance < 0.02), ] <- "Class < 2 %"
+erebus_p$Class[is.na(erebus_p$Class)] = "Unassigned"
+
+x <- c("Class < 2 %",
+"Acidimicrobiia","Acidobacteriae","Actinobacteria","AD3","Alphaproteobacteria", "Anaerolineae","Armatimonadia",
+"Bacilli", "Bacteroidia","Blastocatellia","Chloroflexia","Chthonomonadetes","Cyanobacteriia","Deinococci","Desulfotomaculia",
+ "FFCH5909","Fimbriimonadia","Gammaproteobacteria", "Gemmatimonadetes","Gitt-GS-136","Holophagae","KD4-96","Kryptonia",          
+ "Ktedonobacteria","Myxococcia","Nitrososphaeria","Nitrospiria","Oligoflexia","P2-11E","Parcubacteria","Phycisphaerae",      
+ "Planctomycetes","Polyangia","Sericytochromatia","SHA-26","Sulfobacillia","Thermoleophilia","TK10",     
+ "Vampirivibrionia","Verrucomicrobiae","Vicinamibacteria","YNPFFP2","Unassigned")
+
+names(pal_barnf) = x
+
+erebus_p$Class <- factor(as.character(erebus_p$Class), levels=x)
+erebus_p <- erebus_p[order(erebus_p$Class),]
+
+
+# Plot 
+plot_Class <- ggplot(erebus_p, aes(x = Name, y = Abundance, fill = Class)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = pal_barnf) +theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 9),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.x  = element_text(size=9, vjust = 0.5, hjust = 1, angle = 90),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    plot.title = element_text(size=20, hjust = -0.05),
+    legend.text = element_text(size=9), 
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    legend.key.width = unit(0.3, "cm"),
+    legend.key.height=unit(0.3,"cm")) +
+  coord_cartesian(expand = FALSE)
+
+
+
+ploy_class_save <- plot_Class + facet_grid(~Sample_type4, scales = "free", space = "free")
+
+#plot_Class$data$Sample_type3 <- factor(plot_Class$data$Sample_type3, levels = c("Subglacial", "Exposed"))
+ploy_class_save$data$Sample_type4 <- factor(ploy_class_save$data$Sample_type4, levels = c("Subglacial", "Exp Hot Soil", "Western Crater", "Tramway Ridge"))
+
+
+ploy_class_save <- ploy_class_save + 
+                    theme(panel.margin=unit(.07, "lines"), 
+                         panel.border = element_rect(color = "black", fill = NA, size = 1), 
+                         strip.background = element_rect(color = "black", size = 1))
+
+plot_Class_save_all <- ploy_class_save + scale_fill_manual(values = pal_barnf)
+plot_Class_save_all
+```
+
+
+Add division into groups
+```{r}
+
+merged_group <- phyloseq::merge_samples(phy_all,"Sample_type4") # 5 samples
+sample_data(merged_group)$Sample_type4 <- as.character(sample_names(merged_group))
+
+temp <- as.data.frame(as.matrix(sample_data(merged_group))) %>%
+  mutate(Sample_typeX = case_when(
+    startsWith(Sample_type4, "Subglacial") ~ "Subglacial",
+    startsWith(Sample_type4, "Tramway Ridge") ~ "Exposed",
+    startsWith(Sample_type4, "Exp Hot Soil") ~ "Exposed",
+    startsWith(Sample_type4, "Western Crater") ~ "Exposed",
+    ))
+sample_data(merged_group)$Sample_type3 <- temp$Sample_typeX
+
+    
+# Data for plotting - process the same way as Stephen did:
+merged_group_trans <- transform_sample_counts(merged_group, function(x) x/sum(x))
+merged_group_trans_p <- merged_group_trans %>% psmelt()
+
+
+# reorder Class before naming the Class < 1% and the Unassigned. Otherwise it doesnt work for some reason.
+merged_group_trans_p$Class <- factor(as.character(merged_group_trans_p$Class), levels=x)
+merged_group_trans_p <- merged_group_trans_p[order(merged_group_trans_p$Class),]
+
+
+length(merged_group_trans_p$Class[which(merged_group_trans_p$Class == "Class < 2 %")])
+merged_group_trans_p["Class"][which(merged_group_trans_p$Abundance < 0.01), ] <- "Class < 2 %"
+merged_group_trans_p$Class[is.na(merged_group_trans_p$Class)] = "Unassigned"
+
+ggplot(merged_group_trans_p, aes(x = Sample_type4, y = Abundance, fill = Class)) +
+  geom_bar(stat = "identity", width = 0.98) +
+  scale_fill_manual(values = pal_barnf)
+
+
+```
+
+
+```{r,fig.width=20, fig.height=11}
+
+# Plot 
+plot_Class <- ggplot(merged_group_trans_p, aes(x = Sample_type4, y = Abundance, fill = Class)) +
+  geom_bar(stat = "identity", width = 0.98) +
+  scale_fill_manual(values = pal_barnf) + theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 10),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size=9),
+    legend.position = "none",
+    axis.text.x  = element_text(size=9, vjust = 0.5, hjust = 0.5, angle = 0),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=9),
+    axis.title.y = element_text(size=10),
+    plot.title = element_text(size=20, hjust = -0.05)) +
+  coord_cartesian(expand = FALSE)
+
+plot_Class$data$Sample_type4 <- factor(plot_Class$data$Sample_type4, levels = c("Subglacial", "Exp Hot Soil", "Western Crater", "Tramway Ridge"))
+plot_Class$data$Sample_type3 <- factor(plot_Class$data$Sample_type3, levels = c("Subglacial", "Exposed"))
+
+ploy_phylym_save <- plot_Class + facet_grid(~Sample_type3, scales = "free", space = "free") + 
+  theme(panel.margin=unit(.05, "lines"),
+        panel.border = element_rect(color = "black", fill = NA, size = 1.2), 
+        strip.background = element_rect(color = "black", size = 1),
+        legend.text = element_text(size=25), 
+                                      legend.title = element_text(size=30))
+#ploy_phylym_save
+
+plot_Class_save_groups <- ploy_phylym_save
+
+```
+
+
+```{r, fig.width=13, fig.height=10}
+
+class_abundance_comb <- (plot_Class_save_groups + theme(legend.position="none"))/ (plot_Class_save_all + theme(legend.position="bottom", 
+                                                                                                         legend.text = element_text(size=15), 
+                                                                                                         )) 
+class_abundance2 <- ggarrange(plot_Class_save_groups,
+                              plot_Class_save_all,
+                              nrow = 2,
+                              labels = c("A", "B"),
+                              heights = c(0.45, 1))
+
+class_all2 <- ggarrange(class_abundance2,
+                      bps_c,
+                      nrow = 2,
+                      labels = c(""),
+                      heights = c(1, 0.6))
+
+class_all2
+
+ggsave("barplots_class_all3.png", class_all2, path = "Saved_plots/",
+       width = 240, height = 250, units = "mm", dpi = 300)
+ggsave("barplots_class_all3.svg", class_all2, path = "Saved_plots/",
+       width = 240, height = 250, units = "mm", dpi = 300)
+
+```
+
+```{r}
+ggsave(
+  "TBR03.2_class_abundance2.pdf",
+  plot = class_abundance2,
+  path = "Saved_plots/",
+  device = "pdf",
+  width = 13,
+  height = 10,
+)
+
+```
+
+
+
+# Exploring the data further
+
+Investigate: which phyla does the unkown classes belong to?
+```{r, fig.height=20, fig.width=30}
+sample_data(phy_all_trans)
+phy_class_na <- subset_taxa(phy_all_trans, is.na(Class))
+tax_table(phy_class_na)
+
+erebus_p_class_na <- phy_class_na %>% psmelt() 
+
+plot_bar(phy_class_na, x="Name", y="Abundance", fill="Phylum")  + theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 16),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size=12),
+    axis.text.x  = element_text(size=16, vjust = 0.5, hjust = 1, angle = 90),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=16),
+    axis.title.y = element_text(size=16),
+    plot.title = element_text(size=20, hjust = -0.05)) +
+  coord_cartesian(expand = FALSE)+
+  facet_grid(~Sample_type4, scales = "free", space = "free") + 
+  theme(panel.margin=unit(.05, "lines"),
+        panel.border = element_rect(color = "black", fill = NA, size = 1.2), 
+        strip.background = element_rect(color = "black", size = 1),
+        legend.text = element_text(size=25), 
+        legend.title = element_text(size=30))
+
+```
+Investigate: What are the abundant ASVs of unkown classes?
+```{r,fig.height=20, fig.width=30}
+erebus_p_class_na["OTU"][which(erebus_p_class_na$Abundance < 0.01), ] <- "Class < 1 %"
+
+# Plot 
+plot_class_na <- ggplot(erebus_p_class_na, aes(x = Name, y = Abundance, fill = OTU)) +
+  geom_bar(stat = "identity") +theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 16),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.x  = element_text(size=16, vjust = 0.5, hjust = 1, angle = 90),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=16),
+    axis.title.y = element_text(size=16),
+    plot.title = element_text(size=16, hjust = -0.05),
+    legend.text = element_text(size=16), 
+    legend.title = element_text(size=30, angle = 90),
+    legend.position = "right") +
+  coord_cartesian(expand = FALSE) +
+  scale_fill_manual(values = c(
+   "black",   "#9E0142", "#D53E4F", "#F46D43", "#FDAE61", "#FEE08B", "#ABDDA4", "#66C2A5", "#3288BD", "#5E4FA2",
+ "#8E0152", "#C51B7D", "#DE77AE", "#F1B6DA", "#7FBC41", "#4D9221", "#276419", "#40004B",
+ "#762A83", "#9970AB", "#C2A5CF", "#E7D4E8", "#A6DBA0", "blue", "red", "#00441B", "#543005", "#8C510A",
+ "#BF812D", "#DFC27D", "#80CDC1", "#35978F", "#01665E", "#003C30", "#636363"))
+
+plot_class_na_save <- plot_class_na + facet_grid(~Sample_type4, scales = "free", space = "free")
+
+#plot_Class$data$Sample_type3 <- factor(plot_Class$data$Sample_type3, levels = c("Subglacial", "Exposed"))
+plot_class_na_save$data$Sample_type4 <- factor(plot_class_na_save$data$Sample_type4, levels = c("Subglacial", "Exp Hot Soil", "Western Crater", "Tramway Ridge"))
+
+plot_class_na_save
+```
+I BLASTed some of these ASVs:
+```{r}
+seqs["ASV_17"]
+#This ASV is found in other mountain environments, Antarctica, and acidic mining evironments!
+# 100% identity but is this published? FQ716929
+#HF930837, KJ623632, HF546501, JX505051 (!!), FR749815, FN870208, JF737898, DQ660863 , MK724119, MK242442, MK521747
+
+seqs["ASV_16"]
+#ONLY 95.8% identity!
+# looks like the closest relatives are mainly found in soil samples from forests?? This is not expected. Maybe a Firmicute: GU016168.1 95% identity
+# This article keeps coming up: Ureolytic prokaryotes in soil; community abundance and diversity
+
+seqs["ASV_8"]
+# Several results with 100% identity. But what is it?
+#Glacial movement shapes bacterial community structure (KX094452.1)
+# Greenland? https://academic.oup.com/femsec/article/92/9/fiw127/2197710?login=false
+#  KJ623633,, AB464941.2
+
+seqs["ASV_142"]
+#	94.42"
+
+seqs["ASV_152"]
+#	97.21%
+
+seqs["ASV_118"]
+#	97.21%
+
+seqs["ASV_224"]
+#	97.21%
+
+```
+
+
+Try to subset some interesting phyla that seem to differ between the sample categories
+```{r}
+
+phy_actino = subset_taxa(phy_all_trans, Phylum == "Actinobacteriota")
+
+phy_chloro = subset_taxa(phy_all_trans, Phylum == "Chloroflexi")
+
+phy_cyano = subset_taxa(phy_all_trans, Phylum == "Cyanobacteria")
+
+phy_kingdom = subset_taxa(phy_all_trans, Kingdom == "Archaea")
+
+```
+
+```{r, fig.height=10, fig.width=14}
+
+plot_bar(phy_actino, x="Name", y="Abundance", fill="Genus")  + theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 1),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size=1),
+    axis.text.x  = element_text(size=7, vjust = 0.5, hjust = 1, angle = 90),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=1),
+    axis.title.y = element_text(size=1),
+    plot.title = element_text(size=2, hjust = -0.05)) +
+  coord_cartesian(expand = FALSE)+
+  facet_grid(~Sample_type4, scales = "free", space = "free") + 
+  theme(panel.margin=unit(.05, "lines"),
+        panel.border = element_rect(color = "black", fill = NA, size = 1.2), 
+        strip.background = element_rect(color = "black", size = 1),
+        legend.text = element_text(size=10), 
+        legend.title = element_text(size=1)) #+ scale_fill_manual(values=c(Trine_palette, Trine_palette, "blue", "red", "black"))
+
+erebus_p_phy_actino <- phy_actino %>% psmelt() 
+erebus_p_phy_actino["OTU"][which(erebus_p_phy_actino$Abundance < 0.02), ] <- "Class < 2 %"
+
+# Plot 
+plot_actino <- ggplot(erebus_p_phy_actino, aes(x = Name, y = Abundance, fill = OTU)) +
+  geom_bar(stat = "identity") +theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 16),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.x  = element_text(size=16, vjust = 0.5, hjust = 1, angle = 90),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=16),
+    axis.title.y = element_text(size=16),
+    plot.title = element_text(size=20, hjust = -0.05),
+    legend.text = element_text(size=15), 
+    legend.title = element_text(size=5, angle = 90),
+    legend.position = "bottom") +
+  coord_cartesian(expand = FALSE)
+
+plot_actino <- plot_actino + facet_grid(~Sample_type4, scales = "free", space = "free")
+
+#plot_Class$data$Sample_type3 <- factor(plot_Class$data$Sample_type3, levels = c("Subglacial", "Exposed"))
+plot_actino$data$Sample_type4 <- factor(plot_actino$data$Sample_type4, levels = c("Subglacial", "Exp Hot Soil", "Western Crater", "Tramway Ridge"))
+
+plot_actino
+
+plot_bar(phy_chloro, x="Name", y="Abundance", fill="Class")  + theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 1),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size=12),
+    axis.text.x  = element_text(size=16, vjust = 0.5, hjust = 1, angle = 90),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=16),
+    axis.title.y = element_text(size=16),
+    plot.title = element_text(size=20, hjust = -0.05)) +
+  coord_cartesian(expand = FALSE)+
+  facet_grid(~Sample_type4, scales = "free", space = "free") + 
+  theme(panel.margin=unit(.05, "lines"),
+        panel.border = element_rect(color = "black", fill = NA, size = 1.2), 
+        strip.background = element_rect(color = "black", size = 1),
+        legend.text = element_text(size=25), 
+        legend.title = element_text(size=30))
+
+plot_bar(phy_kingdom, x="Name", y="Abundance", fill="OTU")  + theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 1),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size=12),
+    axis.text.x  = element_text(size=16, vjust = 0.5, hjust = 1, angle = 90),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=16),
+    axis.title.y = element_text(size=16),
+    plot.title = element_text(size=20, hjust = -0.05)) +
+  coord_cartesian(expand = FALSE)+
+  facet_grid(~Sample_type4, scales = "free", space = "free") + 
+  theme(panel.margin=unit(.05, "lines"),
+        panel.border = element_rect(color = "black", fill = NA, size = 1.2), 
+        strip.background = element_rect(color = "black", size = 1),
+        legend.text = element_text(size=25), 
+        legend.title = element_text(size=30))
+
+
+
+erebus_p_phy_king <- phy_kingdom %>% psmelt() 
+erebus_p_phy_king["OTU"][which(erebus_p_phy_king$Abundance < 0.01), ] <- "Class < 1 %"
+
+# Plot 
+plot_king <- ggplot(erebus_p_phy_king, aes(x = Name, y = Abundance, fill = Order)) +
+  geom_bar(stat = "identity") +theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 16),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.x  = element_text(size=16, vjust = 0.5, hjust = 1, angle = 90),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=16),
+    axis.title.y = element_text(size=16),
+    plot.title = element_text(size=20, hjust = -0.05),
+    legend.text = element_text(size=15), 
+    legend.title = element_text(size=5, angle = 90),
+    legend.position = "bottom") +
+  coord_cartesian(expand = FALSE)
+
+plot_king <- plot_king + facet_grid(~Sample_type4, scales = "free", space = "free")
+
+#plot_Class$data$Sample_type3 <- factor(plot_Class$data$Sample_type3, levels = c("Subglacial", "Exposed"))
+plot_king$data$Sample_type4 <- factor(plot_king$data$Sample_type4, levels = c("Subglacial", "Exp Hot Soil", "Western Crater", "Tramway Ridge"))
+
+plot_king
+
+max(otu_table(phy_kingdom)[,"ASV_1"]) #TR1 - 32
+
+plot_bar(phy_cyano, x="Name", y="Abundance", fill="Class")  + theme_bw()+
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 16),
+    panel.background = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size=12),
+    axis.text.x  = element_text(size=16, vjust = 0.5, hjust = 1, angle = 90),
+    axis.title.x = element_blank(),
+    axis.text.y  = element_text(size=16),
+    axis.title.y = element_text(size=16),
+    plot.title = element_text(size=20, hjust = -0.05)) +
+  coord_cartesian(expand = FALSE)+
+  facet_grid(~Sample_type4, scales = "free", space = "free") + 
+  theme(panel.margin=unit(.05, "lines"),
+        panel.border = element_rect(color = "black", fill = NA, size = 1.2), 
+        strip.background = element_rect(color = "black", size = 1),
+        legend.text = element_text(size=25), 
+        legend.title = element_text(size=30))
+
+sample_data(phy_all)[,-1:-9]
+
+```
+Cyanobacteria in caves?: https://academic.oup.com/gbe/article/6/5/1031/603056
+READ https://en.wikipedia.org/wiki/Vampirovibrio_chlorellavorus
+https://www.science.org/doi/full/10.1126/science.aal3794
+
+
+```{r}
+otu_table(phy_cyano)[,"ASV_411"]
+```
+
+
+
+
+
