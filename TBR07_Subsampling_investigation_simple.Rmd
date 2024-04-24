@@ -18,8 +18,7 @@ subcat_pal <- c("darkorange2","#386cb0","#7fc97f")
 ```
 
 ```{r read_phyloseq}
-path <- "C:/Users/trine/OneDrive - Danmarks Tekniske Universitet/DTU2/NZ Project 2022/DADA2_Analysis_011221/My_own_ASV_generation/nice_scripts2/"
-setwd(path)
+library(here)
 
 # WHEN YOU OPEN THIS FILE ----
 phy_all <- readRDS("phyloseq_files/physeq_all")

@@ -154,9 +154,7 @@ subcat_pal2 <- c("#386cb0","darkorange","#984ea3")
 
 ```{r Load the data}
 # Load the final phyloseq object with the correct metadata
-path <- "C:/Users/trine/OneDrive - Danmarks Tekniske Universitet/DTU2/NZ Project 2022/DADA2_Analysis_011221/My_own_ASV_generation/"
-setwd(path)
-getwd()
+library(here)
 
 phy_all <- readRDS("phyloseq_files/physeq_all")
 #otu_table(phy_clean) # it still has the seqs instead of ASV_1, ASV_2, etc...

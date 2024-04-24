@@ -20,8 +20,7 @@ packageVersion("dada2")
 
 
 # Define the path
-path <- "C:/Users/trine/OneDrive - Danmarks Tekniske Universitet/DTU2/NZ Project 2022/DADA2_Analysis_011221/01_Trimmed/filtered/"
-
+library(here)
 
 # List files to see their names and check you are in the right directory
 list.files(path)
