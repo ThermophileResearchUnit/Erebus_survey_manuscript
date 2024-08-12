@@ -148,7 +148,8 @@ net_pear_tt <- netConstruct(phy_erebus_all2,
                          adjust = "adaptBH",
                          verbose = 3,
                          seed = 63)
-saveRDS(net_pear_tt, "net_pear_tt")
+#saveRDS(net_pear_tt, "net_pear_tt")
+net_pear_tt <- readRDS("net_pear_tt")
 ```
 
 ```{r}
@@ -265,6 +266,8 @@ legend(0.7, 1.1, cex = 0.6, title = "estimated correlation:",
 ```{r}
 plot(net_pear_tt_analyz, 
      nodeColor = "cluster", 
+     colorVec = c("red", "white", "#2166ac"),
+     nodeTransp = 20,
      nodeSize = "eigenvector",
      repulsion = 0.8,
      rmSingles = TRUE,
@@ -279,10 +282,10 @@ legend(0.7, 0.95, cex = 0.9, title = "estimated correlation:",
        legend = c("+","-"), lty = 1, lwd = 3, col = c("#009900","red"),
        bty = "n", horiz = TRUE)
 
-legend(-1.1, 1, cex = 0.9, title = "Cluster:",
+legend(-1.1, 1.1, cex = 0.9, title = "Cluster:",
        legend = c("Cluster 1", "Cluster 2","Cluster 3"), 
        pch = 21, pt.cex = 2, 
-       pt.bg = c("red", "#009900", "blue"),
+       pt.bg = c("red", "white", "#2166ac"),
        col = "darkgray",
        bty = "n", horiz = FALSE)
 
